@@ -27,8 +27,10 @@ REM  One-time prerequisites:
 REM    - uv (https://docs.astral.sh/uv/)
 REM    - Git for Windows
 REM    - Visual Studio 2022 Build Tools with the "Desktop development with C++"
-REM      workload and a Windows SDK. DEPOT_TOOLS_WIN_TOOLCHAIN=0 makes the
-REM      build use your local VS instead of downloading Chromium's toolchain.
+REM      workload, a Windows SDK, and the SDK's "Debugging Tools for Windows"
+REM      feature (the C++ workload does not install it; Chromium's gn configure
+REM      needs dbghelp.dll from it). DEPOT_TOOLS_WIN_TOOLCHAIN=0 makes the build
+REM      use your local VS instead of downloading Chromium's toolchain.
 REM    - Rust and Bun are installed automatically (user-local, no elevation)
 REM      when AGENT_MODE=source; not needed for AGENT_MODE=published.
 REM    - ~100 GB free disk on the drive holding %CHROMIUM_ROOT%, 16+ GB RAM.
@@ -49,8 +51,9 @@ REM                   missing). published downloads them from cdn.browseros.com.
 REM    SIGN           yes | no                 default: no (yes needs ESIGNER_*
 REM                   in packages\browseros\.env, copied from .env.example)
 REM    UPLOAD         yes | no                 default: no (yes needs R2_*)
-REM    CHROMIUM_ROOT  checkout root            default: C:\Users\moreno\chromium
-REM                   (the src tree lives at %CHROMIUM_ROOT%\src)
+REM    CHROMIUM_ROOT  checkout root            default: <repo parent>\chromium
+REM                   (a sibling of this checkout; the src tree lives at
+REM                   %CHROMIUM_ROOT%\src)
 REM ============================================================================
 
 REM Windows console pipes are cp1252 and the build CLI logs emoji; force UTF-8
@@ -65,7 +68,8 @@ if "%RESOURCE_MODE%"=="" set "RESOURCE_MODE=published"
 if "%AGENT_MODE%"=="" set "AGENT_MODE=source"
 if "%SIGN%"=="" set "SIGN=no"
 if "%UPLOAD%"=="" set "UPLOAD=no"
-if "%CHROMIUM_ROOT%"=="" set "CHROMIUM_ROOT=C:\Users\moreno\chromium"
+REM Default: sibling of this checkout (%%~ffd normalizes %~dp0.. to an absolute path).
+if "%CHROMIUM_ROOT%"=="" for %%d in ("%~dp0..") do set "CHROMIUM_ROOT=%%~fdd\chromium"
 set "CHROMIUM_SRC=%CHROMIUM_ROOT%\src"
 
 echo.
@@ -134,6 +138,16 @@ for %%e in (BuildTools Community Professional Enterprise) do (
 )
 if defined VS_INSTALL (
     set "vs2022_install=!VS_INSTALL!"
+    REM Chromium's vs_toolchain.py copy_dlls step needs dbghelp.dll from the Windows SDK's
+    REM "Debugging Tools for Windows" feature, which the C++ workload does not install.
+    REM Without it gn gen fails with a cryptic error after hours of provisioning, so check now.
+    set "SDK_DIR=%ProgramFiles(x86)%\Windows Kits\10"
+    if defined WINDOWSSDKDIR set "SDK_DIR=!WINDOWSSDKDIR!"
+    if not exist "!SDK_DIR!\Debuggers\x64\dbghelp.dll" (
+        echo [build] ERROR: dbghelp.dll not found under !SDK_DIR!\Debuggers\x64 - the Windows SDK "Debugging Tools for Windows" feature is missing.
+        echo           Open Visual Studio Installer, Modify your Build Tools install, go to Individual components, and install "Debugging Tools for Windows". Then rerun build.bat.
+        goto :fail
+    )
 ) else (
     echo [build] WARNING: no VS 2022 found in the usual locations. Install Build Tools or set vs2022_install manually.
 )
@@ -199,7 +213,9 @@ if errorlevel 1 (
     if errorlevel 1 goto :fail
 )
 
-set "BUN_BIN=%USERPROFILE%\.bun"
+REM bun's installer places the binary in %USERPROFILE%\.bun\bin (and adds that
+REM dir to PATH), not directly under .bun.
+set "BUN_BIN=%USERPROFILE%\.bun\bin"
 where bun >nul 2>nul || if exist "%BUN_BIN%\bun.exe" set "PATH=%BUN_BIN%;%PATH%"
 where bun >nul 2>nul || (
     echo [build] Bun not found; installing ...

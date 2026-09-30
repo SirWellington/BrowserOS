@@ -1,3 +1,4 @@
+use crate::format::diff::DiffDetail;
 use crate::framework::{
     ToolCtx, ToolExecResult, ToolResult, error_result, parse_args, pending_dialog_result,
     text_result,
@@ -10,6 +11,7 @@ use futures_util::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::time::Duration;
 
 const DESCRIPTION: &str = "\
 Act on the page using refs from the last snapshot. \
@@ -17,8 +19,13 @@ kinds: click, type (into focused element), fill (ref+value, or many via fields[]
 press (key/combo), hover, focus, check, uncheck, select (option value), scroll, drag. \
 dialog_accept/dialog_dismiss handle pending JavaScript dialogs. \
 ALWAYS fill a whole form in one call via fields[], never field-by-field. \
+Fill replaces text by default (clear=false appends) and verifies the field value; \
+use type/press for keyboard handlers and wait for application-specific readiness. \
 Reads back a post-settle diff - no follow-up diff/snapshot needed; \
-re-snapshot only for fresh refs.";
+re-snapshot only for fresh refs. \
+Control that readback with diff: \"full\" (default) whole diff, \"summary\" change counts, \
+\"none\" skip it, or a number to cap the inline diff to that many characters; \
+use \"none\"/\"summary\"/a small number on large pages where a full diff floods context.";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -95,6 +102,34 @@ struct FillField {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum ActDiffMode {
+    None,
+    Summary,
+    Full,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum ActDiff {
+    Mode(ActDiffMode),
+    MaxChars(f64),
+}
+
+/// Maps the act `diff` arg to a diff detail, or `None` to skip the readback
+/// entirely (the "none" mode). Absent or "full" keeps the whole diff (#2700).
+fn resolve_diff_detail(diff: Option<ActDiff>) -> Option<DiffDetail> {
+    match diff {
+        None | Some(ActDiff::Mode(ActDiffMode::Full)) => Some(DiffDetail::Full),
+        Some(ActDiff::Mode(ActDiffMode::None)) => None,
+        Some(ActDiff::Mode(ActDiffMode::Summary)) => Some(DiffDetail::Summary),
+        Some(ActDiff::MaxChars(max_chars)) => {
+            Some(DiffDetail::MaxChars(max_chars.max(0.0).floor() as usize))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ActArgs {
     page: u32,
@@ -134,7 +169,10 @@ struct ActArgs {
     button: Option<ActMouseButton>,
     #[serde(rename = "clickCount")]
     click_count: Option<i64>,
+    /// Defaults to true for fill (replace; false appends), false for type_at.
     clear: Option<bool>,
+    /// Post-action diff detail: "full" (default) whole diff, "summary" change counts, "none" to skip it, or a number to cap the inline diff to that many characters. Use "none"/"summary"/a small number on large pages where a full diff floods context.
+    diff: Option<ActDiff>,
 }
 
 pub fn definition() -> crate::framework::ToolDef {
@@ -156,14 +194,47 @@ fn handler<'a>(
         }
         let console_start = ctx.session.page_signals.console_mark(&page_id);
         let input = ctx.session.input(page_id.clone()).await;
-        if let Some(err) = run_kind(&args, &input).await? {
-            return Ok(Some(err));
-        }
         if args.kind.is_dialog() {
+            if let Some(err) = run_kind(&args, &input).await? {
+                return Ok(Some(err));
+            }
             ctx.session.page_signals.clear_dialog(&page_id);
+        } else {
+            // A confirm/prompt/beforeunload opened by this action freezes the
+            // renderer, so the action's CDP ack never returns; race it against the
+            // page's dialog signal and hand control back with the pending dialog so
+            // the caller can accept or dismiss it, instead of hanging to the run cap
+            // (#2780).
+            let signals = ctx.session.page_signals.clone();
+            let watched = page_id.clone();
+            let dialog = async move {
+                while signals.pending_dialog(&watched).is_none() {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            };
+            tokio::select! {
+                biased;
+                result = run_kind(&args, &input) => {
+                    if let Some(err) = result? {
+                        return Ok(Some(err));
+                    }
+                }
+                () = dialog => {
+                    return Ok(Some(pending_dialog_result(ctx, page_id.clone()).unwrap_or_else(
+                        || {
+                            text_result(
+                                "a JavaScript dialog is open on this page; use act kind=\"dialog_accept\" or \"dialog_dismiss\" before other actions".to_string(),
+                                None,
+                            )
+                        },
+                    )));
+                }
+            }
         }
         response.data(json!({ "kind": args.kind.as_str() }));
-        response.include_diff(args.page, true);
+        if let Some(detail) = resolve_diff_detail(args.diff) {
+            response.include_diff(args.page, true, detail);
+        }
         response.include_console_summary(args.page, console_start);
         Ok(Some(text_result(
             format!("ok ({})", args.kind.as_str()),
@@ -217,7 +288,7 @@ async fn run_kind(
                         .fill(
                             &Ref(field.r#ref.clone()),
                             &field.value,
-                            args.clear.unwrap_or(false),
+                            args.clear.unwrap_or(true),
                         )
                         .await?;
                 }
@@ -225,7 +296,7 @@ async fn run_kind(
                 (args.r#ref.as_deref(), args.value.as_deref())
             {
                 input
-                    .fill(&Ref(ref_id.to_string()), value, args.clear.unwrap_or(false))
+                    .fill(&Ref(ref_id.to_string()), value, args.clear.unwrap_or(true))
                     .await?;
             } else {
                 return Ok(Some(error_result(
@@ -351,5 +422,48 @@ fn scroll_direction(direction: Option<&ActDirection>) -> ScrollDirection {
         ActDirection::Down => ScrollDirection::Down,
         ActDirection::Left => ScrollDirection::Left,
         ActDirection::Right => ScrollDirection::Right,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn diff_detail_mapping() {
+        // Absent or "full" keeps the whole diff; "none" skips the readback.
+        assert!(matches!(resolve_diff_detail(None), Some(DiffDetail::Full)));
+        assert!(matches!(
+            resolve_diff_detail(Some(ActDiff::Mode(ActDiffMode::Full))),
+            Some(DiffDetail::Full)
+        ));
+        assert!(resolve_diff_detail(Some(ActDiff::Mode(ActDiffMode::None))).is_none());
+        assert!(matches!(
+            resolve_diff_detail(Some(ActDiff::Mode(ActDiffMode::Summary))),
+            Some(DiffDetail::Summary)
+        ));
+        // A number caps the inline diff, floored to whole characters.
+        assert!(matches!(
+            resolve_diff_detail(Some(ActDiff::MaxChars(250.7))),
+            Some(DiffDetail::MaxChars(250))
+        ));
+    }
+
+    #[test]
+    fn diff_arg_accepts_modes_and_numbers() {
+        let string_mode: ActArgs = serde_json::from_value(
+            json!({ "page": 1, "kind": "focus", "ref": "e1", "diff": "none" }),
+        )
+        .unwrap_or_else(|err| panic!("string diff arg should parse: {err}"));
+        assert!(matches!(
+            string_mode.diff,
+            Some(ActDiff::Mode(ActDiffMode::None))
+        ));
+
+        let numeric: ActArgs =
+            serde_json::from_value(json!({ "page": 1, "kind": "focus", "ref": "e1", "diff": 500 }))
+                .unwrap_or_else(|err| panic!("numeric diff arg should parse: {err}"));
+        assert!(matches!(numeric.diff, Some(ActDiff::MaxChars(_))));
     }
 }

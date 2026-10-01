@@ -51,9 +51,11 @@ REM                   missing). published downloads them from cdn.browseros.com.
 REM    SIGN           yes | no                 default: no (yes needs ESIGNER_*
 REM                   in packages\browseros\.env, copied from .env.example)
 REM    UPLOAD         yes | no                 default: no (yes needs R2_*)
-REM    CHROMIUM_ROOT  checkout root            default: <repo parent>\chromium
-REM                   (a sibling of this checkout; the src tree lives at
-REM                   %CHROMIUM_ROOT%\src)
+REM    CHROMIUM_ROOT  checkout root            default: C:\chromium
+REM                   (the src tree lives at %CHROMIUM_ROOT%\src). Keep this
+REM                   short: Chromium's generated headers exceed the 260-char
+REM                   MAX_PATH on deep roots, and the longPaths registry does
+REM                   not help - clang-cl uses ANSI Win32 path APIs.
 REM ============================================================================
 
 REM Windows console pipes are cp1252 and the build CLI logs emoji; force UTF-8
@@ -68,8 +70,9 @@ if "%RESOURCE_MODE%"=="" set "RESOURCE_MODE=published"
 if "%AGENT_MODE%"=="" set "AGENT_MODE=source"
 if "%SIGN%"=="" set "SIGN=no"
 if "%UPLOAD%"=="" set "UPLOAD=no"
-REM Default: sibling of this checkout (%%~ffd normalizes %~dp0.. to an absolute path).
-if "%CHROMIUM_ROOT%"=="" for %%d in ("%~dp0..") do set "CHROMIUM_ROOT=%%~fdd\chromium"
+REM Default: C:\chromium - a short root so generated build paths stay under
+REM the Windows 260-char MAX_PATH limit (a deep root breaks the compile step).
+if "%CHROMIUM_ROOT%"=="" set "CHROMIUM_ROOT=C:\chromium"
 set "CHROMIUM_SRC=%CHROMIUM_ROOT%\src"
 
 echo.

@@ -1,13 +1,17 @@
-use crate::framework::{ToolDef, ToolMetadata, input_schema, output_schema};
+use crate::framework::{FeatureNote, ToolDef, ToolMetadata, input_schema, output_schema};
+use browseros_core::NativeFeature;
 use rmcp::model::ToolAnnotations;
 
 pub mod act;
+pub mod browser_profiles;
+pub mod browser_target;
 pub mod diff;
 pub mod download;
 pub mod evaluate;
 pub mod grep;
 pub mod history;
 pub mod navigate;
+mod page_creation;
 pub mod pdf;
 pub mod read;
 pub mod run;
@@ -15,6 +19,7 @@ pub mod screenshot;
 pub mod snapshot;
 pub mod tab_groups;
 pub mod tabs;
+mod target_output_schema;
 pub mod upload;
 pub mod wait;
 pub mod windows;
@@ -22,6 +27,8 @@ pub mod windows;
 #[must_use]
 pub fn catalog() -> Vec<ToolDef> {
     vec![
+        browser_profiles::definition(),
+        browser_target::definition(),
         tabs::definition(),
         tab_groups::definition(),
         history::definition(),
@@ -66,6 +73,7 @@ where
         output_schema: None,
         annotations,
         metadata: metadata_for_tool(name),
+        feature_note: None,
         handler,
     }
 }
@@ -87,12 +95,26 @@ where
         output_schema: Some(output_schema::<O>()),
         annotations,
         metadata: metadata_for_tool(name),
+        feature_note: None,
         handler,
     }
 }
 
+/// Profile-targeting documentation shown only to browsers that implement it.
+fn profile_note(text: &'static str) -> Option<FeatureNote> {
+    Some(FeatureNote {
+        feature: NativeFeature::ProfileTargeting,
+        text,
+    })
+}
+
 fn metadata_for_tool(name: &str) -> ToolMetadata {
     ToolMetadata {
+        // Both profile tools are hidden together on older natives: a saved selection cannot
+        // block ordinary work there (capture runs it unbound), so get/clear are not needed.
+        requires: matches!(name, "browser_target" | "browser_profiles")
+            .then_some(NativeFeature::ProfileTargeting),
+        manages_target: matches!(name, "browser_target" | "browser_profiles"),
         accepts_page_arg: matches!(
             name,
             "tabs"

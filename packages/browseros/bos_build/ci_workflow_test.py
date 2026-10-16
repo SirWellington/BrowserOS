@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Regression tests for the reusable Chromium build workflow."""
 
+import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -46,6 +48,23 @@ def git_bash_path() -> str:
     if not git_bash.is_file():
         raise AssertionError(f"Git Bash not found at {git_bash}")
     return str(git_bash)
+
+
+# Neo's browser draft gate, whitespace-normalized. Kept literal so the
+# behavioral test below evaluates exactly what the workflow ships.
+NEO_FINALIZE_CONDITION = (
+    "${{ !cancelled() "
+    "&& needs.preflight.result == 'success' "
+    "&& needs.server.result == 'success' "
+    "&& needs.extension.result == 'success' "
+    "&& needs.components.result == 'success' "
+    "&& needs.linux.result == (needs.preflight.outputs.build_linux == 'true' "
+    "&& 'success' || 'skipped') "
+    "&& needs.windows.result == (needs.preflight.outputs.build_windows == 'true' "
+    "&& 'success' || 'skipped') "
+    "&& needs.macos.result == (needs.preflight.outputs.build_macos == 'true' "
+    "&& 'success' || 'skipped') }}"
+)
 
 
 class ChromiumBuildWorkflowTest(unittest.TestCase):
@@ -394,9 +413,8 @@ class ChromiumBuildWorkflowTest(unittest.TestCase):
             "Resolve chromium pin and paths",
             "Restore chromium checkout (WarpCache)",
             "Restore chromium checkout (R2)",
-            "Ensure chromium checkout at pinned tag",
-            "Reset chromium tree (clean module)",
-            "Sync chromium dependencies (gclient)",
+            "Prepare chromium source and dependencies",
+            "Clean cached product outputs and resources",
         ):
             with self.subTest(phase=phase):
                 self.assertLess(bootstrap_index, indexes[phase])
@@ -405,8 +423,7 @@ class ChromiumBuildWorkflowTest(unittest.TestCase):
         steps = self.build_steps()
 
         for phase in (
-            "Ensure chromium checkout at pinned tag",
-            "Sync chromium dependencies (gclient)",
+            "Prepare chromium source and dependencies",
         ):
             with self.subTest(phase=phase):
                 step = next(step for step in steps if step.get("name") == phase)
@@ -896,6 +913,17 @@ class ReleaseIntegrityWorkflowTest(unittest.TestCase):
         },
     }
 
+    # Neo's narrower dispatch surface; each default reproduces the full
+    # release, and x64-only macOS is absent because release-macos.yml cannot
+    # build it.
+    NEO_DISPATCH_INPUTS = {
+        "platforms": ("choice", ["all", "macos", "linux", "windows"], "all"),
+        "macos_arch": ("choice", ["universal", "arm64"], "universal"),
+        "publication": ("choice", ["alpha", "draft-only"], "alpha"),
+    }
+    NEO_ALPHA = "${{ needs.preflight.outputs.publication == 'alpha' }}"
+    NEO_DRAFT_ONLY = "${{ needs.preflight.outputs.publication == 'draft-only' }}"
+
     def load_workflow(self, workflow_name: str) -> dict[str, object]:
         path = WORKFLOW_DIR / workflow_name
         return yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -912,12 +940,22 @@ class ReleaseIntegrityWorkflowTest(unittest.TestCase):
             if step.get("name") == step_name
         )
 
-    def test_full_releases_have_no_optional_dispatch_surface(self):
+    def test_full_release_dispatch_surfaces_default_to_the_full_release(self):
         for workflow_name in self.RELEASES:
             with self.subTest(workflow=workflow_name):
                 workflow = self.load_workflow(workflow_name)
                 triggers = workflow.get("on", workflow.get(True))
-                self.assertIsNone(triggers["workflow_dispatch"])
+                if workflow_name == "release-browseros.yml":
+                    self.assertIsNone(triggers["workflow_dispatch"])
+                else:
+                    inputs = triggers["workflow_dispatch"]["inputs"]
+                    self.assertEqual(
+                        {
+                            name: (spec["type"], spec["options"], spec["default"])
+                            for name, spec in inputs.items()
+                        },
+                        self.NEO_DISPATCH_INPUTS,
+                    )
                 self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
                 self.assertEqual(workflow["concurrency"]["queue"], "max")
                 self.assertEqual(workflow["permissions"], {})
@@ -967,7 +1005,18 @@ class ReleaseIntegrityWorkflowTest(unittest.TestCase):
                     server["with"]["ref"],
                     "${{ needs.preflight.outputs.source_sha }}",
                 )
-                self.assertIs(server["with"]["publish_ota"], True)
+                if workflow_name == "release-browseros.yml":
+                    self.assertIs(server["with"]["publish_ota"], True)
+                    self.assertNotIn("defer_finalize", server["with"])
+                else:
+                    # draft-only defers finalize, which is what suppresses the
+                    # tag, latest alias, public release, OTA and reflection.
+                    self.assertEqual(server["with"]["publish_ota"], self.NEO_ALPHA)
+                    self.assertEqual(
+                        server["with"]["defer_finalize"], self.NEO_DRAFT_ONLY
+                    )
+                for pinned in ("version", "mode", "state_owner"):
+                    self.assertNotIn(pinned, server["with"])
                 self.assertEqual(server["secrets"], "inherit")
 
                 self.assertEqual(set(extension["needs"]), {"preflight", "server"})
@@ -980,10 +1029,21 @@ class ReleaseIntegrityWorkflowTest(unittest.TestCase):
                     extension["with"]["branch"],
                     "${{ needs.preflight.outputs.source_sha }}",
                 )
-                self.assertIs(extension["with"]["publish_alpha_feed"], True)
+                if workflow_name == "release-browseros.yml":
+                    self.assertIs(extension["with"]["publish_alpha_feed"], True)
+                    self.assertNotIn("defer_finalize", extension["with"])
+                else:
+                    self.assertEqual(
+                        extension["with"]["publish_alpha_feed"], self.NEO_ALPHA
+                    )
+                    self.assertEqual(
+                        extension["with"]["defer_finalize"], self.NEO_DRAFT_ONLY
+                    )
+                for pinned in ("version", "mode", "state_owner"):
+                    self.assertNotIn(pinned, extension["with"])
                 self.assertEqual(extension["secrets"], "inherit")
 
-    def test_full_release_matrix_is_fixed_and_uses_published_resources(self):
+    def test_native_lanes_are_selected_and_use_published_resources(self):
         lanes = {
             "linux": ("release-linux.yml", None),
             "windows": ("release-windows.yml", None),
@@ -995,7 +1055,15 @@ class ReleaseIntegrityWorkflowTest(unittest.TestCase):
             for job_name, (called_workflow, arch) in lanes.items():
                 with self.subTest(workflow=workflow_name, lane=job_name):
                     job = jobs[job_name]
-                    self.assertNotIn("if", job)
+                    if workflow_name == "release-browseros.yml":
+                        self.assertNotIn("if", job)
+                    else:
+                        # No status function: the implicit success() still
+                        # requires preflight and both exact components.
+                        self.assertEqual(
+                            job["if"],
+                            f"needs.preflight.outputs.build_{job_name} == 'true'",
+                        )
                     self.assertEqual(
                         set(job["needs"]),
                         {"preflight", "server", "extension", "components"},
@@ -1026,8 +1094,15 @@ class ReleaseIntegrityWorkflowTest(unittest.TestCase):
                     self.assertNotIn("prepared_resources_artifact", job["with"])
                     if job_name == "windows":
                         self.assertIs(job["with"]["sign"], True)
-                    if arch is not None:
+                    if arch is not None and workflow_name == "release-browseros.yml":
                         self.assertEqual(job["with"]["arch"], arch)
+                        self.assertNotIn("notify", job["with"])
+                    elif arch is not None:
+                        self.assertEqual(
+                            job["with"]["arch"],
+                            "${{ needs.preflight.outputs.macos_arch }}",
+                        )
+                        self.assertEqual(job["with"]["notify"], self.NEO_ALPHA)
                     self.assertEqual(job["secrets"], "inherit")
 
     def test_browser_draft_waits_for_every_publication_and_native_lane(self):
@@ -1051,13 +1126,34 @@ class ReleaseIntegrityWorkflowTest(unittest.TestCase):
                 finalize = self.named_step(
                     workflow, "finalize", "Create or refresh browser draft"
                 )
+                if workflow_name == "release-browseros.yml":
+                    self.assertNotIn("if", jobs["finalize"])
+                    selection = ("--platforms all", "--macos-arch universal")
+                else:
+                    self.assertEqual(
+                        " ".join(jobs["finalize"]["if"].split()),
+                        NEO_FINALIZE_CONDITION,
+                    )
+                    selection = (
+                        '--platforms "$PLATFORMS"',
+                        '--macos-arch "$MACOS_ARCH"',
+                    )
+                    self.assertEqual(
+                        finalize["env"]["PLATFORMS"],
+                        "${{ needs.preflight.outputs.platforms }}",
+                    )
+                    self.assertEqual(
+                        finalize["env"]["MACOS_ARCH"],
+                        "${{ needs.preflight.outputs.macos_arch }}",
+                    )
+                    self.assertNotIn("inputs.", finalize["run"])
                 for token in (
                     "release github create",
                     f"--product {config['product']}",
-                    "--platforms all",
-                    "--source-sha",
-                    "--workflow-run-id",
-                    "--target",
+                    *selection,
+                    '--source-sha "$SOURCE_SHA"',
+                    '--workflow-run-id "$GITHUB_RUN_ID"',
+                    '--target "$SOURCE_SHA"',
                 ):
                     self.assertIn(token, finalize["run"])
                 self.assertNotIn("--workflow-run-attempt", finalize["run"])
@@ -1397,9 +1493,17 @@ print(json.dumps({
                     "prepared_resources_artifact",
                     "candidate_sha",
                     "resource_mode: source",
-                    "defer_finalize",
                 ):
                     self.assertNotIn(token, text)
+                deferrals = text.count("defer_finalize")
+                if workflow_name == "release-browseros.yml":
+                    self.assertEqual(deferrals, 0)
+                else:
+                    self.assertEqual(
+                        text.count(f"defer_finalize: {self.NEO_DRAFT_ONLY}"),
+                        deferrals,
+                    )
+                    self.assertEqual(deferrals, 2)
 
     def test_macos_product_artifact_globs_do_not_overlap(self):
         workflow = self.load_workflow("release-macos.yml")
@@ -1474,22 +1578,583 @@ print(json.dumps({
         )
         self.assertIn("macos-chromium-workspace.sh setup", setup["run"])
         self.assertIn("${{ steps.inputs.outputs.chromium_src }}", setup["run"])
+        self.assertIn("${{ steps.inputs.outputs.products }}", setup["run"])
         self.assertIn(
-            '--chromium-src "${{ steps.chromium_workspace.outputs.chromium_src }}"',
+            '--chromium-src "$chromium_src"',
             build["run"],
         )
+        for product in ("browseros", "browserclaw"):
+            self.assertEqual(
+                build["env"][f"{product.upper()}_CHROMIUM_SRC"],
+                "${{ steps.chromium_workspace.outputs." + product + "_chromium_src }}",
+            )
+        self.assertIn("--profile release-ci", build["run"])
+        self.assertIn("browseros source clean-outputs", build["run"])
+        self.assertNotIn("--modules clean", build["run"])
         self.assertNotIn(
             '--chromium-src "${{ steps.inputs.outputs.chromium_src }}"',
             build["run"],
         )
         self.assertEqual(workspace_cleanup["if"], "always()")
-        self.assertEqual(
-            workspace_cleanup["env"]["MACOS_CHROMIUM_WORKSPACE_STATE_PATH"],
-            "${{ steps.chromium_workspace.outputs.state_path }}",
-        )
+        self.assertNotIn("MACOS_CHROMIUM_WORKSPACE_STATE_PATH", workspace_cleanup.get("env", {}))
         self.assertIn("macos-chromium-workspace.sh", workspace_cleanup["run"])
         self.assertIn(" cleanup", workspace_cleanup["run"])
         self.assertEqual(keychain_cleanup["if"], "always()")
+
+
+class NeoReleaseSelectionTest(unittest.TestCase):
+    """Behavior of Neo's lane selection, draft gate and quiet test builds."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.neo = yaml.safe_load(
+            (WORKFLOW_DIR / "release-browserclaw.yml").read_text(encoding="utf-8")
+        )
+        cls.macos = yaml.safe_load(
+            (WORKFLOW_DIR / "release-macos.yml").read_text(encoding="utf-8")
+        )
+
+    def step(self, workflow, job_name: str, step_name: str) -> dict[str, object]:
+        return next(
+            step
+            for step in workflow["jobs"][job_name]["steps"]
+            if step.get("name") == step_name
+        )
+
+    def run_selection(self, platforms: str, macos_arch: str, publication: str):
+        step = self.step(self.neo, "preflight", "Validate release selection")
+        self.assertEqual(
+            step["env"],
+            {
+                "MACOS_ARCH": "${{ inputs.macos_arch }}",
+                "PLATFORMS": "${{ inputs.platforms }}",
+                "PUBLICATION": "${{ inputs.publication }}",
+            },
+        )
+        self.assertNotIn("${{", step["run"])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "output"
+            output.touch()
+            result = subprocess.run(
+                [git_bash_path(), "-c", step["run"]],
+                env={
+                    **os.environ,
+                    "GITHUB_OUTPUT": str(output),
+                    "MACOS_ARCH": macos_arch,
+                    "PLATFORMS": platforms,
+                    "PUBLICATION": publication,
+                },
+                capture_output=True,
+                text=True,
+            )
+            outputs = dict(
+                line.split("=", 1)
+                for line in output.read_text(encoding="utf-8").splitlines()
+            )
+        return result, outputs
+
+    def test_preflight_emits_full_release_selection_by_default(self):
+        result, outputs = self.run_selection("all", "universal", "alpha")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            outputs,
+            {
+                "build_linux": "true",
+                "build_macos": "true",
+                "build_windows": "true",
+                "macos_arch": "universal",
+                "platforms": "all",
+                "publication": "alpha",
+            },
+        )
+
+    def test_preflight_selects_only_the_macos_arm64_lane(self):
+        result, outputs = self.run_selection("macos", "arm64", "draft-only")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            outputs,
+            {
+                "build_linux": "false",
+                "build_macos": "true",
+                "build_windows": "false",
+                "macos_arch": "arm64",
+                "platforms": "macos",
+                "publication": "draft-only",
+            },
+        )
+
+    def test_preflight_rejects_unsupported_or_meaningless_requests(self):
+        cases = (
+            ("macos", "x64", "alpha"),
+            ("linux", "arm64", "alpha"),
+            ("macos;true", "arm64", "alpha"),
+            ("all", "universal", "prod"),
+            ("", "universal", "alpha"),
+        )
+        for platforms, macos_arch, publication in cases:
+            with self.subTest(platforms=platforms, macos_arch=macos_arch):
+                result, outputs = self.run_selection(
+                    platforms, macos_arch, publication
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("::error::", result.stdout)
+                self.assertEqual(outputs, {})
+
+    def finalize_runs(
+        self,
+        selected: set[str],
+        lanes: dict[str, str],
+        *,
+        cancelled: bool = False,
+        components: str = "success",
+    ) -> bool:
+        """Evaluate the shipped finalize `if` for one simulated run.
+
+        The expression only uses !cancelled(), &&, ||, ==, string literals,
+        parentheses and needs lookups, whose GitHub semantics match Python's
+        not/and/or/==. The whitelist below fails if that grammar ever grows.
+        """
+        expression = " ".join(self.neo["jobs"]["finalize"]["if"].split())
+        self.assertEqual(expression, NEO_FINALIZE_CONDITION)
+        self.assertTrue(expression.startswith("${{ ") and expression.endswith(" }}"))
+        body = expression[4:-3]
+        body = body.replace("!cancelled()", "(not cancelled)")
+        body = body.replace("&&", " and ").replace("||", " or ")
+        body = re.sub(
+            r"needs\.([a-z_]+)\.outputs\.([a-z_]+)",
+            r"needs['\1']['outputs']['\2']",
+            body,
+        )
+        body = re.sub(r"needs\.([a-z_]+)\.result", r"needs['\1']['result']", body)
+        leftover = re.sub(r"'[^']*'|\b(?:not|and|or|cancelled|needs)\b", "", body)
+        self.assertRegex(leftover, r"^[\s()\[\]=]*$")
+
+        needs = {
+            "preflight": {
+                "result": "success",
+                "outputs": {
+                    f"build_{lane}": "true" if lane in selected else "false"
+                    for lane in ("linux", "windows", "macos")
+                },
+            },
+            "server": {"result": "success"},
+            "extension": {"result": "success"},
+            "components": {"result": components},
+            **{lane: {"result": result} for lane, result in lanes.items()},
+        }
+        return eval(  # noqa: S307 - repository-owned expression, whitelisted above
+            body, {"__builtins__": {}}, {"cancelled": cancelled, "needs": needs}
+        )
+
+    def test_finalize_requires_every_lane_of_the_default_full_release(self):
+        full = {"linux", "windows", "macos"}
+        succeeded = {"linux": "success", "windows": "success", "macos": "success"}
+        self.assertTrue(self.finalize_runs(full, succeeded))
+        for lane, result in (
+            ("windows", "failure"),
+            ("linux", "cancelled"),
+            ("macos", "skipped"),
+        ):
+            with self.subTest(lane=lane, result=result):
+                self.assertFalse(
+                    self.finalize_runs(full, {**succeeded, lane: result})
+                )
+
+    def test_finalize_accepts_skipped_unselected_lanes_for_macos_arm64(self):
+        lanes = {"linux": "skipped", "windows": "skipped", "macos": "success"}
+        self.assertTrue(self.finalize_runs({"macos"}, lanes))
+
+    def test_finalize_rejects_failed_selected_or_unexpected_lanes(self):
+        base = {"linux": "skipped", "windows": "skipped", "macos": "success"}
+        cases = (
+            ({"macos": "failure"}, {}),
+            ({"macos": "cancelled"}, {}),
+            ({"macos": "skipped"}, {}),
+            ({"linux": "success"}, {}),
+            ({"windows": "failure"}, {}),
+            ({}, {"components": "failure"}),
+            ({}, {"cancelled": True}),
+        )
+        for lane_overrides, run_overrides in cases:
+            with self.subTest(lanes=lane_overrides, run=run_overrides):
+                self.assertFalse(
+                    self.finalize_runs(
+                        {"macos"}, {**base, **lane_overrides}, **run_overrides
+                    )
+                )
+
+    def test_macos_notify_defaults_on_for_dispatch_and_call(self):
+        triggers = self.macos.get("on", self.macos.get(True))
+        for trigger in ("workflow_dispatch", "workflow_call"):
+            with self.subTest(trigger=trigger):
+                notify = triggers[trigger]["inputs"]["notify"]
+                self.assertEqual(notify["type"], "boolean")
+                self.assertIs(notify["default"], True)
+
+        ping = self.step(self.macos, "build", "Slack failure ping")
+        self.assertEqual(ping["if"], "failure() && inputs.notify")
+
+    def test_quiet_macos_build_blanks_the_webhook_before_bos_build_runs(self):
+        build = self.step(self.macos, "build", "Build selected products")
+        script = build["run"]
+        self.assertEqual(build["env"]["SLACK_NOTIFY"], "${{ inputs.notify }}")
+        self.assertNotIn("SLACK_WEBHOOK_URL", build["env"])
+        guard = 'if [ "$SLACK_NOTIFY" = "false" ]; then'
+        self.assertIn(guard, script)
+        self.assertIn('export SLACK_WEBHOOK_URL=""', script)
+        self.assertLess(script.index(guard), script.index("uv run browseros"))
+
+    def test_blank_webhook_wins_over_persistent_checkout_dotenv(self):
+        from bos_build.lib import env as env_module
+        from bos_build.lib.notify import Notifier
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_root = Path(temp_dir) / "packages" / "browseros"
+            package_root.mkdir(parents=True)
+            (package_root / ".env").write_text(
+                "SLACK_WEBHOOK_URL=https://hooks.slack.invalid/T000\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "bos_build.lib.paths.get_package_root", return_value=package_root
+            ):
+                with mock.patch.dict(os.environ, {"SLACK_WEBHOOK_URL": ""}):
+                    env_module._load_dotenv_file()
+                    self.assertFalse(Notifier().enabled)
+                # Control: without the blank override the dotenv webhook loads.
+                with mock.patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("SLACK_WEBHOOK_URL", None)
+                    env_module._load_dotenv_file()
+                    self.assertTrue(Notifier().enabled)
+
+
+FAKE_GH = r"""#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+state_path = Path(os.environ["FAKE_GH_STATE"])
+state = json.loads(state_path.read_text())
+args = sys.argv[1:]
+
+
+def option(name, default=None):
+    return args[args.index(name) + 1] if name in args else default
+
+
+def record(entry):
+    with open(os.environ["FAKE_GH_WRITES"], "a", encoding="utf-8") as stream:
+        stream.write(json.dumps(entry) + "\n")
+
+
+if args[:1] != ["release"]:
+    raise SystemExit(f"unexpected fake gh call: {args}")
+command, tag = args[1], args[2]
+release = state["releases"].get(tag)
+
+if command == "view":
+    if release is None:
+        print("release not found", file=sys.stderr)
+        raise SystemExit(1)
+    if "--json" not in args:
+        print(f"title:\t{tag}")
+        raise SystemExit(0)
+    if release.get("jsonFails"):
+        print("HTTP 502: transient metadata failure", file=sys.stderr)
+        raise SystemExit(1)
+    document = {
+        "isDraft": release["isDraft"],
+        "targetCommitish": release["targetCommitish"],
+        "assets": [{"name": name} for name in sorted(release["assets"])],
+    }
+    query = option("--jq")
+    if query is None:
+        print(json.dumps(document))
+    else:
+        result = subprocess.run(
+            ["jq", "-r", query], input=json.dumps(document),
+            capture_output=True, text=True, check=True,
+        )
+        sys.stdout.write(result.stdout)
+elif command == "download":
+    name = option("--pattern")
+    if release is None or name not in release["assets"]:
+        raise SystemExit(1)
+    target = Path(option("--dir"))
+    target.mkdir(parents=True, exist_ok=True)
+    (target / name).write_text(release["assets"][name], encoding="utf-8")
+else:
+    # Every other release subcommand mutates GitHub state.
+    record({"command": command, "tag": tag, "args": args[3:],
+            "draft": None if release is None else release["isDraft"]})
+    if command == "create":
+        state["releases"][tag] = {
+            "isDraft": "--draft" in args,
+            "targetCommitish": option("--target", ""),
+            "assets": {},
+        }
+    elif command == "upload":
+        if release is None:
+            raise SystemExit(1)
+        for path in (value for value in args[3:] if not value.startswith("--")):
+            release["assets"][Path(path).name] = Path(path).read_text(encoding="utf-8")
+    state_path.write_text(json.dumps(state))
+"""
+
+
+@unittest.skipIf(os.name == "nt", "component release scripts run on Linux runners")
+class DeferredComponentAttachmentTest(unittest.TestCase):
+    """Deferred component builds may write only to source-bound private drafts.
+
+    These run the shipped attachment scripts against a fake `gh` that keeps
+    release state and records every mutating call, so "zero public writes" is
+    observed rather than inferred from the script text.
+    """
+
+    SOURCE = "1" * 40
+    OTHER = "2" * 40
+    SERVER_TAG = "claw-server/v1.2.3"
+    SERVER_TARGETS = ("darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "windows-x64")
+    EXTENSION_TAG = "ext-browserclaw/v1.2.3.0"
+    CRX = "browserclaw-1.2.3.0.crx"
+
+    @classmethod
+    def setUpClass(cls):
+        probe = subprocess.run(
+            [git_bash_path(), "-c", "mapfile -t probe < /dev/null"],
+            capture_output=True,
+        )
+        if probe.returncode != 0:
+            raise unittest.SkipTest("needs bash >= 4 (mapfile), as on Linux runners")
+
+    def script(self, workflow_name: str, job: str, step_name: str) -> dict:
+        workflow = yaml.safe_load((WORKFLOW_DIR / workflow_name).read_text(encoding="utf-8"))
+        return next(
+            step for step in workflow["jobs"][job]["steps"] if step.get("name") == step_name
+        )
+
+    def run_attachment(self, step, *, files, releases, env):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            gh = fake_bin / "gh"
+            gh.write_text(FAKE_GH, encoding="utf-8")
+            gh.chmod(0o755)
+            work = root / "work"
+            for relative, content in files.items():
+                path = work / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            state = root / "state.json"
+            state.write_text(json.dumps({"releases": releases}), encoding="utf-8")
+            writes = root / "writes.jsonl"
+            writes.touch()
+            result = subprocess.run(
+                [git_bash_path(), "-c", step["run"]],
+                cwd=work,
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                    "FAKE_GH_STATE": str(state),
+                    "FAKE_GH_WRITES": str(writes),
+                    "GH_TOKEN": "fake",
+                    "RUNNER_TEMP": str(root / "runner-temp"),
+                    "GIT_CEILING_DIRECTORIES": str(root),
+                    **env,
+                },
+                capture_output=True,
+                text=True,
+            )
+            calls = [
+                json.loads(line)
+                for line in writes.read_text(encoding="utf-8").splitlines()
+            ]
+        return result, calls
+
+    def server_zip(self, target: str) -> str:
+        return f"browseros-claw-server-rust-resources-{target}.zip"
+
+    def run_server(
+        self,
+        release,
+        *,
+        defer="true",
+        reservation="create",
+        drop=None,
+        alter=None,
+        json_fails=False,
+    ):
+        step = self.script(
+            "release-claw-server.yml", "publish-versioned", "Attach zips to private draft"
+        )
+        self.assertEqual(step["env"]["DEFER_FINALIZE"], "${{ inputs.defer_finalize }}")
+        self.assertEqual(
+            step["env"]["RESERVATION"], "${{ needs.prepare.outputs.reservation }}"
+        )
+        files = {
+            f"dist/claw-server/{self.server_zip(target)}": f"canonical {target}"
+            for target in self.SERVER_TARGETS
+        }
+        releases = {}
+        if release is not None:
+            draft, target = release
+            assets = {Path(path).name: content for path, content in files.items()}
+            if drop:
+                del assets[self.server_zip(drop)]
+            if alter:
+                assets[self.server_zip(alter)] = "different bytes"
+            releases[self.SERVER_TAG] = {
+                "isDraft": draft,
+                "targetCommitish": target,
+                "assets": assets,
+                "jsonFails": json_fails,
+            }
+        return self.run_attachment(
+            step,
+            files=files,
+            releases=releases,
+            env={
+                "DEFER_FINALIZE": defer,
+                "RELEASE_SHA": self.SOURCE,
+                "RELEASE_TAG": self.SERVER_TAG,
+                "RESERVATION": reservation,
+                "VERSION": "1.2.3",
+            },
+        )
+
+    def test_deferred_server_reuses_matching_public_assets_read_only(self):
+        result, calls = self.run_server((False, self.SOURCE), reservation="tag")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("read-only", result.stdout)
+        self.assertEqual(calls, [])
+
+    def test_deferred_server_rejects_missing_or_conflicting_public_assets(self):
+        for change in ({"drop": "linux-x64"}, {"alter": "darwin-arm64"}):
+            with self.subTest(**change):
+                result, calls = self.run_server(
+                    (False, self.SOURCE), reservation="tag", **change
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("::error::Published", result.stdout)
+                self.assertEqual(calls, [])
+
+    def test_deferred_server_rejects_a_foreign_draft(self):
+        result, calls = self.run_server((True, self.OTHER), reservation="reuse")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is not a private draft", result.stdout)
+        self.assertEqual(calls, [])
+
+    def test_deferred_server_writes_only_to_its_private_draft(self):
+        cases = (
+            ("source-bound draft", (True, self.SOURCE), "reuse", ["upload"]),
+            ("tag-verified draft", (True, self.OTHER), "tag", ["upload"]),
+            ("new draft", None, "create", ["create", "upload"]),
+        )
+        for label, release, reservation, commands in cases:
+            with self.subTest(label):
+                result, calls = self.run_server(release, reservation=reservation)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual([call["command"] for call in calls], commands)
+                upload = calls[-1]
+                self.assertIn("--clobber", upload["args"])
+                self.assertIn(upload["draft"], (True, None))
+                if release is None:
+                    self.assertIn("--draft", calls[0]["args"])
+
+    def test_deferred_server_fails_closed_when_metadata_is_unreadable(self):
+        # Plain existence succeeds in every case, so only the strict deferred
+        # metadata read stands between these releases and `upload --clobber`.
+        cases = (
+            ("public, JSON read fails", (False, self.SOURCE), True),
+            ("private draft, JSON read fails", (True, self.SOURCE), True),
+            ("draft state missing", (None, self.SOURCE), False),
+        )
+        for label, release, json_fails in cases:
+            with self.subTest(label):
+                result, calls = self.run_server(
+                    release, reservation="tag", json_fails=json_fails
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls, [])
+
+    def test_alpha_server_attachment_is_unchanged(self):
+        result, calls = self.run_server(
+            (False, self.SOURCE), defer="", reservation="tag", alter="linux-x64"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([call["command"] for call in calls], ["upload"])
+
+    def run_extension(self, release, *, defer="true", asset=None, json_fails=False):
+        step = self.script("release-extensions.yml", "build", "Attach CRX assets")
+        self.assertEqual(step["env"]["DEFER_FINALIZE"], "${{ inputs.defer_finalize }}")
+        built = f"packages/browseros/build/extensions/dist/{self.CRX}"
+        releases = {}
+        if release is not None:
+            draft, target = release
+            releases[self.EXTENSION_TAG] = {
+                "isDraft": draft,
+                "targetCommitish": target,
+                "assets": {} if asset is None else {self.CRX: asset},
+                "jsonFails": json_fails,
+            }
+        return self.run_attachment(
+            step,
+            files={built: "canonical crx"},
+            releases=releases,
+            env={
+                "DEFER_FINALIZE": defer,
+                "NAMES": "browserclaw",
+                "RELEASE_SHA": self.SOURCE,
+                "VERSION": "1.2.3.0",
+            },
+        )
+
+    def test_deferred_extension_never_writes_to_a_public_release(self):
+        cases = (
+            ("matching", "canonical crx", 0),
+            ("missing", None, 1),
+            ("conflicting", "different bytes", 1),
+        )
+        for label, asset, failed in cases:
+            with self.subTest(label):
+                result, calls = self.run_extension((False, self.SOURCE), asset=asset)
+                self.assertEqual(result.returncode != 0, bool(failed), result.stdout)
+                self.assertEqual(calls, [])
+
+    def test_deferred_extension_adds_assets_only_to_its_private_draft(self):
+        result, calls = self.run_extension((True, self.OTHER))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is not a private draft", result.stdout)
+        self.assertEqual(calls, [])
+
+        result, calls = self.run_extension((True, self.SOURCE))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            [(call["command"], call["draft"]) for call in calls], [("upload", True)]
+        )
+
+    def test_deferred_extension_fails_closed_when_metadata_is_unreadable(self):
+        for draft in (False, True):
+            with self.subTest(draft=draft):
+                result, calls = self.run_extension(
+                    (draft, self.SOURCE), json_fails=True
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls, [])
+
+    def test_alpha_extension_attachment_is_unchanged(self):
+        result, calls = self.run_extension((False, self.SOURCE), defer="")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([call["command"] for call in calls], ["upload"])
 
 
 class ProductNightlyWorkflowTest(unittest.TestCase):
@@ -1961,13 +2626,17 @@ class ProductNightlyWorkflowTest(unittest.TestCase):
             "--resource-mode published",
         ):
             self.assertIn(token, build["run"])
+        self.assertIn("browseros source clean-outputs", build["run"])
+        self.assertNotIn("--modules clean", build["run"])
+        workspace_setup = self.named_step(workflow, "build", "Setup disposable Chromium workspace")
+        self.assertIn("${{ inputs.product }}", workspace_setup["run"])
         self.assertIn("Clean up disposable Chromium workspace", text)
         self.assertIn("Clean up macOS signing keychain", text)
         self.assertIn("actions/upload-artifact@v7", text)
         self.assertIn("release.json", text)
         self.assertNotIn("gh release create", text)
 
-@unittest.skipIf(os.name == "nt", "macOS signing helper shell tests run on POSIX")
+@unittest.skipIf(os.name == "nt", "macOS workspace helper shell tests run on POSIX")
 class MacOSChromiumWorkspaceHelperTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1994,38 +2663,47 @@ class MacOSChromiumWorkspaceHelperTest(unittest.TestCase):
         self.base_root_resolved = self.base_root.resolve()
         self.base_src_resolved = self.base_src.resolve()
         self.head = "a" * 40
-        self._write_fake_uname()
-        self._write_fake_stat()
+        self._write_fake_uv()
         self._write_fake_git()
         self._write_fake_cp()
+        depot_tools = self.base_root / "depot_tools"
+        (depot_tools / ".git").mkdir(parents=True)
+        gclient = depot_tools / "gclient"
+        gclient.write_text("#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$*\" >> \"$GCLIENT_LOG\"\n")
+        gclient.chmod(0o755)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _write_fake_uname(self):
-        uname = self.bin_dir / "uname"
-        uname.write_text(
-            """#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\\n' "${UNAME_VALUE:-Darwin}"
-"""
-        )
-        uname.chmod(0o755)
+    def _write_fake_uv(self):
+        import sys
 
-    def _write_fake_stat(self):
-        stat = self.bin_dir / "stat"
-        stat.write_text(
-            """#!/usr/bin/env bash
-set -euo pipefail
-path="${@: -1}"
-if [ "${STAT_SPLIT_WORKSPACE_PARENT:-}" = "1" ] && [[ "$path" == *"browseros-ci-apfs-workspaces"* ]]; then
-  printf '222\\n'
-else
-  printf '111\\n'
-fi
+        # Exercise the shell-to-CLI handoff on Linux CI, replacing only the
+        # macOS platform/device facts and external git/gclient/cp executables.
+        uv = self.bin_dir / "uv"
+        uv.write_text(
+            f"#!{sys.executable}\n"
+            f"import sys\nsys.path.insert(0, {str(REPO_ROOT / 'packages/browseros')!r})\n"
+            """import os
+from pathlib import Path
+from types import SimpleNamespace
+from bos_build.cli.source import app
+from bos_build.steps.source import workspace
+workspace.sys = SimpleNamespace(platform='darwin')
+if os.environ.get('STAT_SPLIT_WORKSPACE_PARENT') == '1':
+    real_stat = Path.stat
+    def split_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if path.name == 'browseros-ci-apfs-workspaces':
+            values = list(result)
+            values[2] += 1
+            return os.stat_result(values)
+        return result
+    Path.stat = split_stat
+app(args=sys.argv[sys.argv.index('source') + 1:])
 """
         )
-        stat.chmod(0o755)
+        uv.chmod(0o755)
 
     def _write_fake_git(self):
         git = self.bin_dir / "git"
@@ -2040,7 +2718,7 @@ if [ "${1:-}" = "-C" ]; then
 fi
 cmd="${1:-}"
 shift || true
-repo="${repo:-.}"
+repo="${repo:-$PWD}"
 repo_was_cleaned() {
   [ -f "$GIT_CLEAN_LOG" ] || return 1
   while IFS= read -r cleaned_repo; do
@@ -2050,11 +2728,16 @@ repo_was_cleaned() {
 }
 case "$cmd" in
   rev-parse)
-    target="${1:-}"
+    target="${@: -1}"
     case "$target" in
       HEAD)
-        printf '%s\\n' "${GIT_HEAD:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+        if [ -f "$GIT_CHECKOUT_HEAD" ]; then
+          cat "$GIT_CHECKOUT_HEAD"
+        else
+          printf '%s\\n' "${GIT_HEAD:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+        fi
         ;;
+      --is-shallow-repository) printf 'false\\n' ;;
       refs/tags/*)
         printf '%s\\n' "${GIT_PIN_HEAD:-${GIT_HEAD:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}}"
         ;;
@@ -2076,6 +2759,9 @@ case "$cmd" in
   clean)
     printf '%s\\n' "$repo" >> "$GIT_CLEAN_LOG"
     ;;
+  checkout)
+    printf '%s\\n' "${GIT_PIN_HEAD:-$GIT_HEAD}" > "$GIT_CHECKOUT_HEAD"
+    ;;
 esac
 """
         )
@@ -2093,7 +2779,10 @@ case "${1:-}" in
     /bin/cp "$2" "$3"
     ;;
   -cR)
-    [ "${CP_FAIL_CLONE:-}" != "1" ] || exit 66
+    if [ "${CP_FAIL_CLONE:-}" = "1" ] && [[ "$3" == *"-browserclaw/"* ]]; then
+      printf 'partial copy\\n' > "$(dirname "$3")/partial-copy"
+      exit 66
+    fi
     /bin/cp -R "$2" "$3"
     ;;
   *)
@@ -2112,6 +2801,8 @@ esac
                 "BROWSEROS_CHROMIUM_VERSION_FILE": str(self.version_file),
                 "CP_LOG": str(self.cp_log),
                 "GIT_HEAD": self.head,
+                "GIT_CHECKOUT_HEAD": str(self.root / "git-checkout-head"),
+                "GCLIENT_LOG": str(self.root / "gclient.log"),
                 "GIT_CLEAN_LOG": str(self.git_clean_log),
                 "GIT_LOG": str(self.git_log),
                 "GITHUB_ENV": str(self.github_env),
@@ -2145,11 +2836,11 @@ esac
     def _workspace_parent(self):
         return self.base_root_resolved.parent / "browseros-ci-apfs-workspaces"
 
-    def _workspace_root(self, tag="123-4"):
-        return self._workspace_parent() / f"browseros-ci-chromium-{tag}"
+    def _workspace_root(self, tag="123-4", product="browseros"):
+        return self._workspace_parent() / f"browseros-ci-chromium-{tag}-{product}"
 
-    def _state_path(self, tag="123-4"):
-        return self.runner_temp / f"browseros-ci-chromium-workspace-{tag}.env"
+    def _state_path(self, tag="123-4", product="browseros"):
+        return self.runner_temp / f"browseros-ci-chromium-workspace-{tag}-{product}.env"
 
     def _write_workspace_marker(self, workspace_root, tag="old-1"):
         marker = workspace_root / ".browseros-workspace-state.env"
@@ -2164,6 +2855,7 @@ esac
                     f"base_head={self.head}",
                     "chromium_version=1.2.3.4",
                     f"run_tag={tag}",
+                    "product=browseros",
                 )
             )
             + "\n",
@@ -2190,23 +2882,30 @@ esac
 
         env_lines = self.github_env.read_text(encoding="utf-8").splitlines()
         self.assertIn(f"CHROMIUM_SRC={workspace_src}", env_lines)
-        self.assertIn(
-            f"MACOS_CHROMIUM_WORKSPACE_STATE_PATH={state_path}",
-            env_lines,
-        )
+        self.assertEqual(outputs["browseros_state_path"], str(state_path))
+        self.assertEqual(outputs["browseros_chromium_src"], str(workspace_src))
         cp_lines = self.cp_log.read_text(encoding="utf-8").splitlines()
         self.assertTrue(any(line.startswith("-c ") for line in cp_lines))
         self.assertTrue(any(line.startswith("-cR ") for line in cp_lines))
         self.assertFalse(any(line.startswith("-R ") for line in cp_lines))
+        locks = list((workspace_root / ".browseros-build-locks").iterdir())
+        self.assertEqual(len(locks), 1)
+        lock_inode = locks[0].stat().st_ino
 
         cleanup = self._run_helper(
             "cleanup",
             MACOS_CHROMIUM_WORKSPACE_STATE_PATH=str(state_path),
         )
         self.assertEqual(cleanup.returncode, 0, cleanup.stderr + cleanup.stdout)
-        self.assertFalse(workspace_root.exists())
+        self.assertEqual(
+            {path.name for path in workspace_root.iterdir()},
+            {".browseros-build-locks", ".browseros-workspace-state.env"},
+        )
         self.assertFalse(state_path.exists())
         self.assertTrue(self.base_src.is_dir())
+        self.assertEqual(locks[0].stat().st_ino, lock_inode)
+        self.assertEqual(self._run_helper("cleanup").returncode, 0)
+        self.assertEqual(locks[0].stat().st_ino, lock_inode)
 
     def test_setup_reaps_only_marked_stale_owned_workspaces(self):
         parent = self._workspace_parent()
@@ -2221,7 +2920,8 @@ esac
         result = self._run_helper("setup", self.base_src)
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertFalse(stale.exists())
+        self.assertFalse((stale / "src").exists())
+        self.assertTrue((stale / ".browseros-workspace-state.env").exists())
         self.assertTrue(unmarked.exists())
         self.assertTrue(Path(self._outputs()["workspace_root"]).exists())
         self.assertTrue(self.base_root.exists())
@@ -2241,7 +2941,7 @@ esac
         )
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertFalse(stale.exists())
+        self.assertFalse((stale / "src").exists())
         self.assertTrue(self._workspace_root().exists())
         self.assertTrue(self.base_root.exists())
 
@@ -2266,12 +2966,12 @@ esac
 
         result = self._run_helper("cleanup")
 
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("Ignoring unexpected Chromium workspace path", result.stderr)
-        self.assertFalse(state_path.exists())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Workspace cleanup failed", result.stderr + result.stdout)
+        self.assertTrue(state_path.exists())
         self.assertTrue(self.base_root.exists())
 
-    def test_setup_rejects_unowned_state_path(self):
+    def test_setup_does_not_use_unowned_state_override(self):
         outside_state = self.root / "outside.env"
 
         result = self._run_helper(
@@ -2280,12 +2980,9 @@ esac
             MACOS_CHROMIUM_WORKSPACE_STATE_PATH=str(outside_state),
         )
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(
-            "Unexpected macOS Chromium workspace state path",
-            result.stderr + result.stdout,
-        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertFalse(outside_state.exists())
+        self.assertTrue(self._state_path().exists())
 
     def test_setup_fails_when_workspace_parent_is_not_on_base_volume(self):
         result = self._run_helper(
@@ -2296,27 +2993,36 @@ esac
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            "workspace parent is not on the base checkout volume",
+            "must share an APFS volume",
             result.stderr + result.stdout,
         )
         self.assertFalse(self._workspace_root().exists())
 
     def test_setup_fails_without_full_copy_fallback_when_apfs_clone_fails(self):
-        result = self._run_helper("setup", self.base_src, CP_FAIL_CLONE="1")
+        result = self._run_helper("setup", self.base_src, "all", CP_FAIL_CLONE="1")
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(self._workspace_root().exists())
-        self.assertFalse(self._state_path().exists())
+        for product in ("browseros", "browserclaw"):
+            root = self._workspace_root(product=product)
+            self.assertEqual(
+                {path.name for path in root.iterdir()},
+                {".browseros-build-locks", ".browseros-workspace-state.env"},
+            )
+            self.assertFalse(self._state_path(product=product).exists())
+        self.assertEqual(self._outputs(), {})
         cp_lines = self.cp_log.read_text(encoding="utf-8").splitlines()
         self.assertTrue(any(line.startswith("-cR ") for line in cp_lines))
         self.assertFalse(any(line.startswith("-R ") for line in cp_lines))
 
-    def test_setup_fails_when_base_is_not_at_pinned_chromium_tag(self):
+    def test_setup_refreshes_base_when_not_at_pinned_chromium_tag(self):
         result = self._run_helper("setup", self.base_src, GIT_PIN_HEAD="b" * 40)
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("does not match pinned", result.stderr + result.stdout)
-        self.assertFalse(self._workspace_root().exists())
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(self._outputs()["base_head"], "b" * 40)
+        self.assertIn(
+            "checkout --force --detach refs/tags/1.2.3.4", self.git_log.read_text()
+        )
+        self.assertTrue(self._workspace_root().exists())
 
     def test_setup_repairs_base_with_tracked_changes(self):
         result = self._run_helper(
@@ -2342,6 +3048,9 @@ esac
         nested_repo = self.base_src / "third_party" / "v8"
         nested_repo.mkdir(parents=True)
         (nested_repo / ".git").mkdir()
+        (self.base_root / ".gclient_entries").write_text(
+            "entries = {'src/third_party/v8': 'fixture'}\n"
+        )
 
         result = self._run_helper(
             "setup",
@@ -2352,16 +3061,20 @@ esac
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertTrue(self._workspace_root().exists())
+        self.assertIn(str(nested_repo.resolve()), self.git_clean_log.read_text())
 
     def test_setup_removes_browseros_output_dirs_from_base(self):
         out_dir = self.base_src / "out" / "Default_browseros_arm64"
         out_dir.mkdir(parents=True)
 
-        result = self._run_helper("setup", self.base_src)
+        result = self._run_helper("setup", self.base_src, "all")
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertFalse(out_dir.exists())
-        self.assertTrue(self._workspace_root().exists())
+        for product in ("browseros", "browserclaw"):
+            self.assertTrue(self._workspace_root(product=product).exists())
+            self.assertIn(f"{product}_chromium_src", self._outputs())
+        self.assertEqual(len((self.root / "gclient.log").read_text().splitlines()), 1)
 
 
 @unittest.skipIf(os.name == "nt", "macOS signing helper shell tests run on POSIX")
@@ -2868,7 +3581,7 @@ class ChromiumGitRunbookTest(unittest.TestCase):
 
         bootstrap_index = release_flow.index("`GIT_CONFIG_GLOBAL`")
         source_ensure_index = release_flow.index(
-            "`browseros source ensure --step checkout --repair-cached-depot-tools`"
+            "`browseros source ensure --reset --repair-cached-depot-tools`"
         )
         self.assertLess(bootstrap_index, source_ensure_index)
         self.assertIn(

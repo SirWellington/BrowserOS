@@ -15,6 +15,8 @@
 
 <a href="https://cdn.browseros.com/download/BrowserOS_neo.dmg"><img src="https://img.shields.io/badge/Download-macOS-black?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS" /></a>
 <a href="https://cdn.browseros.com/download/BrowserOS_neo_installer.exe"><img src="https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Download for Windows" /></a>
+<a href="https://cdn.browseros.com/download/BrowserOS_neo.AppImage"><img src="https://img.shields.io/badge/Download-Linux_AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Download for Linux (x64 AppImage)" /></a>
+<a href="https://cdn.browseros.com/download/BrowserOS_neo.deb"><img src="https://img.shields.io/badge/Download-Linux_DEB-D70A53?style=for-the-badge&logo=debian&logoColor=white" alt="Download for Linux (amd64 DEB)" /></a>
 
 **[Website](https://www.browseros.com)** · **[Docs](https://docs.browseros.com)** · **[Enterprise](mailto:founders@browseros.com?subject=Enterprise%3A%20BrowserOS%20neo&body=Hi%2C%0A%0AWe%27re%20looking%20at%20BrowserOS%20neo%20for%20our%20team.%0A%0ACompany%3A%0ATeam%20size%3A%0AWhat%20we%20want%20to%20automate%3A)**
 
@@ -35,7 +37,7 @@ brew tap browseros-ai/tap
 brew install --cask browseros-neo
 ```
 
-Prefer a direct download? Grab it for [macOS](https://cdn.browseros.com/download/BrowserOS_neo.dmg) or [Windows](https://cdn.browseros.com/download/BrowserOS_neo_installer.exe).
+Prefer a direct download? Grab it for [macOS](https://cdn.browseros.com/download/BrowserOS_neo.dmg), [Windows](https://cdn.browseros.com/download/BrowserOS_neo_installer.exe), or Linux x64 ([AppImage](https://cdn.browseros.com/download/BrowserOS_neo.AppImage) · [DEB](https://cdn.browseros.com/download/BrowserOS_neo.deb)).
 
 ### 2. Import from Chrome
 
@@ -135,7 +137,7 @@ Your sessions, screenshots, history, and settings live under `~/.browserclaw/` a
 Yes. Both browsers are Chromium forks, so Chrome extensions work and your bookmarks, passwords, and settings import in one click.
 
 **What platforms are supported?**
-BrowserOS neo runs on macOS and Windows. BrowserOS runs on macOS, Windows, and Linux. System requirements match Google Chrome.
+BrowserOS neo and BrowserOS run on macOS, Windows, and Linux. Neo's Linux builds are x64. System requirements match Google Chrome.
 
 ## Get help
 
@@ -146,7 +148,7 @@ BrowserOS neo runs on macOS and Windows. BrowserOS runs on macOS, Windows, and L
 
 ## For developers
 
-Both browsers ship from this monorepo. Two main subsystems: the **browser** (Chromium fork, C++ and Python) and the **agent platform** (TypeScript, Rust and Go).
+Both browsers ship from this monorepo. Two main subsystems: the **browser** (Chromium fork, C++ and Python) and the **agent platform** (TypeScript and Rust).
 
 ### Architecture
 
@@ -157,15 +159,14 @@ BrowserOS/
 │   ├── build/                       # Build CLI and modules
 │   └── resources/                   # Icons, entitlements, signing
 │
-└── packages/browseros-agent/        # Agent platform (TypeScript / Rust / Go)
+└── packages/browseros-agent/        # Agent platform (TypeScript / Rust)
     ├── apps/
-    │   ├── claw-server-rust/        # BrowserOS neo backend: MCP endpoint + JSON API (Rust)
+    │   ├── claw-server/             # BrowserOS neo backend: MCP endpoint + JSON API (Rust)
     │   ├── claw-app/                # BrowserOS neo dashboard extension (WXT + React)
     │   ├── claw-onboard/            # BrowserOS neo onboarding flow (Vite)
     │   ├── server/                  # BrowserOS MCP server + AI agent loop (Bun)
     │   ├── app/                     # BrowserOS extension UI (WXT + React)
-    │   ├── app-onboard/             # BrowserOS onboarding flow (Vite)
-    │   └── cli/                     # CLI tool (Go)
+    │   └── app-onboard/             # BrowserOS onboarding flow (Vite)
     │
     ├── packages/                    # Shared TypeScript packages
     │   ├── acpx-ai-provider/        # AI SDK provider over the acpx ACP runtime
@@ -190,13 +191,12 @@ BrowserOS/
 | Package | What it does |
 |---------|-------------|
 | [`packages/browseros`](packages/browseros/) | Chromium fork: patches, build system, signing |
-| [`apps/claw-server-rust`](packages/browseros-agent/apps/claw-server-rust/) | BrowserOS neo backend: MCP endpoint agents connect to, plus the API behind the dashboard |
+| [`apps/claw-server`](packages/browseros-agent/apps/claw-server/) | BrowserOS neo backend: MCP endpoint agents connect to, plus the API behind the dashboard |
 | [`apps/claw-app`](packages/browseros-agent/apps/claw-app/) | BrowserOS neo new-tab dashboard: watch, replay, and manage agent sessions |
 | [`apps/claw-onboard`](packages/browseros-agent/apps/claw-onboard/) | BrowserOS neo first-run onboarding |
 | [`apps/server`](packages/browseros-agent/apps/server/) | Bun server exposing the browser MCP tools and running the BrowserOS AI agent loop |
 | [`apps/app`](packages/browseros-agent/apps/app/) | BrowserOS extension: new tab, side panel chat, onboarding, settings |
 | [`apps/app-onboard`](packages/browseros-agent/apps/app-onboard/) | BrowserOS first-run onboarding |
-| [`apps/cli`](packages/browseros-agent/apps/cli/) | Go CLI: control BrowserOS from the terminal or AI coding agents |
 
 ### Contributing
 

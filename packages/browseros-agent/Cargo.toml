@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "apps/claw-server-rust"]
+members = ["crates/*", "apps/claw-server"]
 resolver = "3"
 
 [workspace.package]
@@ -12,6 +12,7 @@ repository = "https://github.com/browseros-ai/BrowserOS"
 harness-integrations = { path = "crates/harness-integrations" }
 browseros-cdp = { path = "crates/browseros-cdp" }
 browseros-core = { path = "crates/browseros-core" }
+browseros-decide = { path = "crates/browseros-decide" }
 browseros-mcp = { path = "crates/browseros-mcp" }
 claw-api = { path = "crates/claw-api" }
 

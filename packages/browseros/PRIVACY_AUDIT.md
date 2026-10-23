@@ -5,6 +5,11 @@ installed browser. The findings below describe the code before the accompanying
 changes. They cannot establish what any particular installation already sent,
 the recipient's retention policy, or who accessed the recipient's storage.
 
+The subsequent upstream merge renamed Rust's `services/run_failures.rs` to
+`services/error_reporting/mod.rs` and introduced a startup/panic reporter. The
+disabled runtime sink was preserved through that refactor; the new startup
+reporter was also made inert so the merge cannot restore automatic reporting.
+
 ## Native browser analytics
 
 The former `chromium_patches/chrome/browser/browseros/metrics/` implementation
@@ -234,3 +239,9 @@ Agent verification included 580 Rust library tests, one telemetry API test,
 focused Bun/privacy tests, and the Bun server typecheck. Extension typechecks
 were blocked by a missing `@browseros/diagnostics/contract` module. Broader Bun
 startup tests also encountered Windows path assumptions and a default timeout.
+
+After merging upstream, `cargo check -p claw-server` passed, as did 17 focused
+error-reporting tests, 11 focused Bun/privacy tests, and the 16 focused native
+tests. The expanded Rust library suite had 835 passes, three ignored tests, and
+one failure in upstream's CAPTCHA connection-failure classification test. That
+CAPTCHA test also failed when run alone; it was not changed as part of this work.

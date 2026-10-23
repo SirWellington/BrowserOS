@@ -10,6 +10,7 @@ This checkout hard-disables automatic usage analytics and remote error reporting
 - The Rust BrowserClaw server never activates its analytics client or alias worker, regardless of consent or credentials, and exposes no PostHog remote-configuration credentials.
 - The BrowserClaw cockpit does not load PostHog or its recorder, even if a server reports telemetry enabled.
 - The Rust run-failure reporter has no automatic sink and does not build remote reports or write the separate diagnostic payload log.
+- After the upstream error-reporting refactor, the replacement runtime error reporter remains disabled, and the new startup/panic reporter is an inert compatibility API with no client, identity, or reporting budget files.
 
 Explicit feedback, bug reports, waitlist submissions, local operational logs, and functional AI/API traffic are unchanged. The Rust telemetry settings API still persists a consent preference and local identity for wire compatibility, but effective delivery stays disabled. Analytics-based cockpit flags remain off without remote evaluation. An explicitly configured feedback-cohort document can still be fetched; the implicit PostHog configuration fallback is disabled.
 

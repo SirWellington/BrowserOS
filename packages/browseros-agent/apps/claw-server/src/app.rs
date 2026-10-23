@@ -1,6 +1,6 @@
 use crate::{
     analytics::{AnalyticsService, AnalyticsSink},
-    api::http,
+    api::{hosted, http},
     config::Config,
     db::{
         AuditLog, DATABASE_FILENAME, Database, MigrationOutcome, RecordingIndex, SessionTabLedger,
@@ -12,6 +12,7 @@ use crate::{
         agent_settings::AgentSettingsStore,
         audit::AuditWorker,
         browser::{BrowserService, TabRegistry},
+        capture::{CaptureHub, CdpPortTransport, LiveSessionTabs},
         cockpit::{CockpitQuery, SessionVisualService, TabActivityRecord, TabActivityService},
         harness::HarnessService,
         harness_skills::load_browserclaw_skill,
@@ -48,7 +49,7 @@ pub struct AppState {
     pub skills: Arc<SkillService>,
     pub skill_runs: Arc<SkillRunService>,
     pub analytics: Arc<AnalyticsService>,
-    pub run_failures: Arc<crate::services::run_failures::RunFailureReporter>,
+    pub error_reporter: Arc<crate::services::error_reporting::ErrorReporter>,
     pub feedback_cohort: Arc<crate::services::feedback_cohort::FeedbackCohort>,
     pub feedback_invites: Arc<crate::db::feedback_invite::FeedbackInviteRepository>,
     pub profiles: Arc<ProfileService>,
@@ -57,7 +58,11 @@ pub struct AppState {
     pub targets: Arc<TargetBindings>,
     pub session_efficiency: Arc<SessionEfficiencyService>,
     pub browser: Arc<BrowserService>,
+    pub captcha: Option<Arc<crate::services::captcha::CaptchaService>>,
     pub visuals: Arc<SessionVisualService>,
+    /// Live screencast and video of session tabs for the hosted `/v1` API; idle (no browser
+    /// connection, no captures) until someone watches.
+    pub capture: Arc<CaptureHub>,
     pub cockpit: Arc<CockpitQuery>,
     pub help: Arc<crate::services::help::HelpRegistry>,
     pub extension_updates: Arc<crate::services::extension_updates::ExtensionUpdates>,
@@ -107,7 +112,7 @@ impl AppState {
         let analytics_sink: Arc<dyn AnalyticsSink> = analytics.clone();
         // Shares the analytics install id, so a failure report and a product event are
         // the same anonymous install and neither adds a new identifier.
-        let run_failures = Arc::new(crate::services::run_failures::RunFailureReporter::from_env(
+        let error_reporter = Arc::new(crate::services::error_reporting::ErrorReporter::from_env(
             crate::db::run_error_budget::RunErrorBudgetRepository::new(database.clone()),
             analytics.get_state().await.distinct_id,
             &config.browserclaw_dir.join("logs"),
@@ -183,6 +188,16 @@ impl AppState {
             browser.clone(),
             tab_activity.clone(),
         );
+        let shutdown = ShutdownHandle::new();
+        let capture = CaptureHub::new(
+            Arc::new(LiveSessionTabs::new(
+                sessions.clone(),
+                audit_log.clone(),
+                visuals.clone(),
+            )),
+            Arc::new(CdpPortTransport::new(config.cdp_port)),
+            shutdown.child_token(),
+        );
         let audit_worker = AuditWorker::new(audit_log.clone());
         sessions.set_audit_flush_hook(Arc::new({
             let audit_worker = Arc::downgrade(&audit_worker);
@@ -206,6 +221,7 @@ impl AppState {
             browser.clone(),
             tab_activity.clone(),
         ));
+        let captcha = crate::services::captcha::CaptchaService::from_env(config.mode);
         Ok(Self {
             config,
             audit_log,
@@ -224,7 +240,7 @@ impl AppState {
             skills,
             skill_runs,
             analytics,
-            run_failures,
+            error_reporter,
             feedback_cohort,
             feedback_invites,
             profiles,
@@ -232,11 +248,13 @@ impl AppState {
             targets,
             session_efficiency,
             browser,
+            captcha,
             visuals,
+            capture,
             cockpit,
             help: Arc::new(crate::services::help::HelpRegistry::new(HELP_MAX_WAIT)),
             extension_updates: Arc::default(),
-            shutdown: ShutdownHandle::new(),
+            shutdown,
             migration,
         })
     }
@@ -244,6 +262,26 @@ impl AppState {
     pub async fn live_tab_activity(&self) -> Vec<TabActivityRecord> {
         let session = self.browser.session().await;
         self.tab_activity.snapshot(session.as_deref()).await
+    }
+
+    /// Reports one-time startup conditions worth seeing remotely. Right now that is the database
+    /// having been migrated by a newer BrowserOS neo (read-forward), which the server survives but
+    /// which signals a version skew the user should resolve by updating. Consent-gated and drawn
+    /// from the shared daily budget, so it cannot exceed the cap or report without consent.
+    pub async fn report_startup_state(&self) {
+        let MigrationOutcome::DatabaseAhead { unknown } = &self.migration else {
+            return;
+        };
+        let consent = self.analytics.get_state().await.consent;
+        self.error_reporter
+            .report_error(
+                consent,
+                "startup",
+                "database_ahead".to_string(),
+                Some(unknown.join(",")),
+                crate::clock::now_epoch_ms(),
+            )
+            .await;
     }
 }
 
@@ -260,7 +298,13 @@ fn resolve_user_home_with(mut lookup: impl FnMut(&str) -> Option<OsString>) -> A
 }
 
 pub fn build_router(state: AppState) -> Router {
-    http::router(state.clone())
+    let mut router = http::router(state.clone());
+    // `/v1` is the hosted API: published to the backend that runs a hosted neo, and absent on
+    // desktop, where a person is at the browser and the cockpit is the way in.
+    if state.config.mode.is_hosted() {
+        router = router.merge(hosted::router());
+    }
+    router
         .with_state(state)
         .layer(middleware::from_fn(http::request_context))
 }
@@ -293,9 +337,11 @@ mod tests {
             replay_retention_days: 7,
             dev_mode: false,
             native: Default::default(),
+            mode: Default::default(),
         });
 
-        let _state = AppState::new_with_home(config, dir.path().join("home")).await?;
+        let state = AppState::new_with_home(config, dir.path().join("home")).await?;
+        assert!(state.captcha.is_none());
 
         assert_eq!(DATABASE_FILENAME, "browserclaw.sqlite");
         assert!(browserclaw_dir.join(DATABASE_FILENAME).is_file());

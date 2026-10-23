@@ -942,6 +942,92 @@ impl BrowserView {
             None => self.session.pages.get_session(page).await,
         }
     }
+    /// A frame endpoint admitted through this page capability, including same-process children.
+    pub async fn frame_session(
+        &self,
+        page: PageId,
+        frame: crate::FrameId,
+    ) -> Result<crate::ProtocolSession, CoreError> {
+        let access = Arc::new(PageAccess::new(
+            self.clone(),
+            self.page(page.clone()).await?,
+        ));
+        let root = access.session().await?.session;
+        let tree = root.send_value("Page.getFrameTree", json!({})).await?;
+        if tree["frameTree"]["frame"]["id"] == frame.as_str() {
+            return Ok(root);
+        }
+        fn children(node: &Value, frames: &mut Vec<crate::FrameId>) {
+            if matches!(
+                node["nodeName"].as_str(),
+                Some("IFRAME" | "FRAME" | "OBJECT" | "EMBED" | "FENCEDFRAME")
+            ) && let Some(id) = node["frameId"].as_str()
+            {
+                frames.push(crate::FrameId(id.to_owned()));
+            }
+            for key in ["children", "shadowRoots"] {
+                for child in node[key].as_array().into_iter().flatten() {
+                    children(child, frames);
+                }
+            }
+            if let Some(document) = node.get("contentDocument") {
+                children(document, frames);
+            }
+        }
+        let mut pending = vec![root];
+        let mut visited = BTreeSet::new();
+        while let Some(parent) = pending.pop() {
+            if !visited.insert(parent.session_id().cloned()) {
+                continue;
+            }
+            // Page.getFrameTree omits remote children. Piercing DOM includes their owners,
+            // including those under closed shadow roots, without granting a foreign target.
+            let document = parent
+                .send_value("DOM.getDocument", json!({"depth":-1,"pierce":true}))
+                .await?;
+            let mut frames = Vec::new();
+            children(&document["root"], &mut frames);
+            for child in frames {
+                let owner = parent
+                    .send_value("DOM.getFrameOwner", json!({"frameId":child.as_str()}))
+                    .await?;
+                let backend = owner["backendNodeId"]
+                    .as_i64()
+                    .ok_or_else(|| CoreError::Message("Frame owner has no backend node".into()))?;
+                let described = parent
+                    .send_value(
+                        "DOM.describeNode",
+                        json!({"backendNodeId":backend,"depth":1}),
+                    )
+                    .await?;
+                let cross_process = described["node"].get("contentDocument").is_none();
+                let target = self
+                    .session
+                    .frames()
+                    .resolve_frame_target_with_epoch(
+                        page.clone(),
+                        Some(child.clone()),
+                        Some(&parent),
+                        cross_process,
+                        access.epoch_guard()?,
+                    )
+                    .await?;
+                let session = access
+                    .frame_capability(target.session, child.clone(), parent.clone(), backend)
+                    .await?;
+                if child == frame {
+                    return Ok(session);
+                }
+                if cross_process && !session.same_session(&parent) {
+                    pending.push(session);
+                }
+            }
+        }
+        Err(CoreError::Message(format!(
+            "Frame {} is no longer part of page {page:?}",
+            frame.as_str()
+        )))
+    }
     pub async fn observe(&self, page: PageId) -> Result<Arc<Observer>, CoreError> {
         let access = self.page_access(page.clone()).await?;
         let observer = self.session.observe(page).await;
@@ -1086,13 +1172,6 @@ impl BrowserView {
         // page_access(PageId) here would adopt a replacement reconciled during that await.
         let creating_view = self.with_expected_created_page(&creation.original)?;
         let access = PageAccess::new(creating_view.clone(), creation.original);
-        for _ in 0..crate::timeouts::NEW_PAGE_READY_ATTEMPTS {
-            let fresh = access.fresh().await?;
-            if !fresh.is_loading || fresh.load_progress >= 1.0 {
-                break;
-            }
-            tokio::time::sleep(crate::timeouts::NEW_PAGE_READY_POLL).await;
-        }
         if let Some(group) = opts.tab_group_id {
             let fresh = access.fresh().await?;
             creating_view
@@ -1103,7 +1182,20 @@ impl BrowserView {
                 )
                 .await?;
         }
-        access.fresh().await
+        // The same question the unbound creation path asks, answered the same
+        // way: the page's content going quiet rather than load_progress
+        // reaching 1.0, and asked last for the same reason. The wait can hold
+        // for a whole ceiling, and this tab can be reconciled onto a new
+        // target while it does, so asking any earlier widens the window in
+        // which the grouping above sees a replacement and fails the creation.
+        let settled = access.fresh().await?;
+        let _ = crate::settle::wait_for_page_ready(
+            self.session.pages.as_ref(),
+            settled.page_id.clone(),
+            crate::timeouts::ARRIVAL_READY_BUDGET,
+        )
+        .await;
+        Ok(settled)
     }
     /// The default profile has no normal window yet: open one (normal and inactive, in the
     /// captured Default context) instead of failing or using another profile's window. It goes
@@ -1417,3 +1509,6 @@ impl BrowserView {
 
 #[cfg(test)]
 mod tests;
+
+#[path = "credential_routing.rs"]
+mod credentials;

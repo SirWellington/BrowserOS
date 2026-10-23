@@ -83,6 +83,9 @@ pub struct ToolCall {
     /// from its arguments the way it is for a granular tool. The script hook records what
     /// the script actually touched, and `effects::page_ownership_notice` reports it.
     pub foreign_pages: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
+    /// Shared with script hooks, including calls that fail or are cancelled
+    /// before they can return runtime audit hints.
+    pub sensitive_credentials: Arc<std::sync::atomic::AtomicBool>,
     /// Original snapshots and deep dispatch guards, captured before detached grouping.
     /// A reusable PageId must never let a later callback adopt its replacement tab.
     pub(crate) created_page_snapshots:
@@ -134,6 +137,19 @@ impl ToolCall {
             ToolFlags::default()
         };
         Self {
+            // Conservatively classify common credential-bearing source before
+            // target admission or execution. The bridge also marks dynamic calls.
+            sensitive_credentials: Arc::new(std::sync::atomic::AtomicBool::new(
+                tool_name == "credentials"
+                    || tool_name == "run"
+                        && raw_args
+                            .get("code")
+                            .and_then(Value::as_str)
+                            .is_some_and(|source| {
+                                let source = source.to_ascii_lowercase();
+                                source.contains("credential") || source.contains("password")
+                            }),
+            )),
             foreign_pages: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
             created_page_snapshots: Arc::default(),
             catalog,
@@ -242,6 +258,7 @@ pub struct NamedToolObserver {
 // the user's tabs and on other agents' tabs; it is simply told whose they are, by
 // `effects::page_ownership_notice`. See that module for why.
 const GUARDS: &[ToolGuard] = &[
+    guards::captcha_busy::guard,
     guards::navigate_scheme::guard,
     guards::browser_connected::guard,
 ];
@@ -272,6 +289,10 @@ const EFFECTS: &[NamedToolEffect] = &[
         // never changes it beyond appending a note. Informational only.
         name: "page-ownership-notice",
         run: effects::page_ownership_notice::apply,
+    },
+    NamedToolEffect {
+        name: "captcha-status",
+        run: effects::captcha_status::apply,
     },
     NamedToolEffect {
         // Also an appended label: a saved profile target the native could not apply.
@@ -599,6 +620,7 @@ pub(super) fn operator_cancellation_result() -> ToolResult {
             "cancellationReason": CANCELLATION_REASON,
             "cancellationKind": "cockpit.operator-cancelled"
         })),
+        audit_hints: None,
     }
 }
 
@@ -2132,6 +2154,7 @@ mod tests {
                 "tab-groups",
                 "session-naming",
                 "page-ownership-notice",
+                "captcha-status",
                 "scope-notice",
                 "helper-discovery",
             ]
@@ -2142,7 +2165,7 @@ mod tests {
         // cannot be reintroduced without someone deleting this line on purpose.
         assert_eq!(
             GUARDS.len(),
-            2,
+            3,
             "a guard was added. Ownership must not be one of them: it informs, it never blocks"
         );
         assert_eq!(

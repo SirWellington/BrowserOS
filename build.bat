@@ -338,6 +338,14 @@ if /I "%SIGN%"=="yes" set "SIGN_FLAG=--sign"
 set "UPLOAD_FLAG=--no-upload"
 if /I "%UPLOAD%"=="yes" set "UPLOAD_FLAG=--upload"
 
+REM --- Patch DEPS: drop unused 32-bit/arm64 Windows updater packages ---------
+REM A 64-bit build never fetches the 32-bit/arm64 updater CIPD packages. One of
+REM them (chrome_win_x86) is heuristically flagged by Windows Defender, which
+REM stalls gclient sync before CIPD's SHA-256 verification can run. Drop the
+REM unused arch variants so the sync only pulls 64-bit packages. Idempotent.
+uv run python tools\patch_deps_updater.py --deps "%CHROMIUM_SRC%\DEPS"
+if errorlevel 1 goto :fail
+
 echo.
 echo [build] Running: uv run browseros build --preset %PRESET% --product %PRODUCT% ^
   --arch %ARCH% --resource-mode %RESOURCE_MODE% %SIGN_FLAG% %UPLOAD_FLAG% --provision %PROVISION% --chromium-src "%CHROMIUM_SRC%" --skip download_resources %PRIVACY_GN_FLAG% %CLEAN_FLAG% %RESUME_FLAG%

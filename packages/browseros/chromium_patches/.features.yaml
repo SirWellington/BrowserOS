@@ -165,7 +165,7 @@ features:
       - third_party/libxml/BUILD.gn
 
   metrics:
-    description: "feat: browseros metrics"
+    description: "chore: disabled native analytics compatibility API"
     files:
       - chrome/browser/browseros/metrics/
       - chrome/browser/metrics/chrome_metrics_service_client.cc
@@ -220,7 +220,7 @@ features:
     files:
       - chrome/browser/browseros/bundled_extensions/
       - chrome/browser/browseros/extensions/
-      - chrome/browser/extensions/chrome_extension_registrar_delegate.cc
+      - chrome/browser/extensions/installed_loader.cc
       - chrome/browser/extensions/extension_url_overrides_registrar.cc
       - chrome/browser/extensions/external_provider_impl.cc
       - chrome/browser/extensions/updater/extension_updater.cc
@@ -323,14 +323,11 @@ features:
       - tools/metrics/histograms/metadata/sync/enums.xml
 
   pin-extensions-toolbar:
-    description: "feat: pin browseros extensions to toolbar"
+    description: "feat: bundled extension update routing (user-controlled pins)"
     files:
-      - chrome/browser/extensions/extension_context_menu_model.cc
       - chrome/browser/extensions/extension_management.cc
       - chrome/browser/ui/toolbar/BUILD.gn
-      - chrome/browser/ui/toolbar/toolbar_actions_model.cc
 
-      - "chrome/browser/ui/views/side_panel/extensions/extension_side_panel_action_item_util.cc"
   flags:
     description: "feat: browser flags"
     files:

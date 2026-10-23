@@ -46,12 +46,12 @@ index 1cf32e1b816acb5316337a7303fd905929d3335b..5470c3476997ab81c709c07f95f488b0
 +  // Allow disabling via command line flag if needed
 +  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
 +          browseros::kDisableExtensions)) {
-+    // Use kExternalComponent for all BrowserOS extensions - higher privilege
-+    // level, consistent location for both bundled CRX and remote URL installs.
++    // Bundles are defaults, not components or administrator-installed items.
++    // Ordinary external locations honor disablement and uninstall tombstones.
 +    auto browseros_provider = std::make_unique<ExternalProviderImpl>(
 +        service, browseros_loader, profile,
-+        ManifestLocation::kExternalComponent,  // CRX location (bundled)
-+        ManifestLocation::kExternalComponent,  // Download location (remote)
++        ManifestLocation::kExternalPref,  // CRX location (bundled)
++        ManifestLocation::kExternalPrefDownload,  // Download location (remote)
 +        Extension::WAS_INSTALLED_BY_DEFAULT);
 +    browseros_provider->set_auto_acknowledge(true);
 +    browseros_provider->set_allow_updates(true);

@@ -52,28 +52,10 @@ export class BrowserOSAdapter {
   }
 
   async logMetric(
-    eventName: string,
-    properties?: Record<string, any>,
+    _eventName: string,
+    _properties?: Record<string, any>,
   ): Promise<void> {
-    if (typeof chrome.browserOS.logMetric !== 'function') {
-      return
-    }
-
-    return new Promise<void>((resolve, reject) => {
-      const callback = () => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message || 'Unknown error'))
-        } else {
-          resolve()
-        }
-      }
-
-      if (properties) {
-        chrome.browserOS.logMetric(eventName, properties, callback)
-      } else {
-        chrome.browserOS.logMetric(eventName, callback)
-      }
-    })
+    // Never forward extension analytics to the native browser telemetry sink.
   }
 
   async getPref(name: string): Promise<PrefObject> {

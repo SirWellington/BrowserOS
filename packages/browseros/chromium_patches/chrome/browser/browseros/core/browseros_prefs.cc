@@ -1,9 +1,9 @@
 diff --git a/chrome/browser/browseros/core/browseros_prefs.cc b/chrome/browser/browseros/core/browseros_prefs.cc
 new file mode 100644
-index 0000000000000000000000000000000000000000..f09b13c6c45676dc7ed83f51ff28aaa8bd202b50
+index 0000000000000000000000000000000000000000..aae20a5cbdbadb04722774353d142628ec2cf860
 --- /dev/null
 +++ b/chrome/browser/browseros/core/browseros_prefs.cc
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,129 @@
 +// Copyright 2025 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -130,11 +130,6 @@ index 0000000000000000000000000000000000000000..f09b13c6c45676dc7ed83f51ff28aaa8
 +    return true;
 +  }
 +  return pref_service->GetBoolean(pref_key);
-+}
-+
-+bool ShouldPinBrowserOSExtension(const std::string& extension_id,
-+                                 PrefService*) {
-+  return IsBrowserOSPinnedExtension(extension_id);
 +}
 +
 +}  // namespace browseros

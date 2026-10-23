@@ -11,7 +11,6 @@ import { Browser } from '@browseros/browser-core/browser'
 import { EXIT_CODES } from '@browseros/shared/constants/exit-codes'
 import { createHttpServer } from './api/server'
 import type { ServerConfig } from './config'
-import { INLINED_ENV } from './env'
 import {
   cleanOldSessions,
   ensureBrowserosDir,
@@ -182,29 +181,9 @@ export class Application {
       server_version: VERSION,
     })
 
-    if (!metrics.isEnabled()) {
-      logger.warn('Metrics disabled: missing POSTHOG_API_KEY')
-    } else if (!installationId) {
-      logger.warn(
-        'Metrics will skip events: installation identity unavailable.',
-      )
-    }
-
-    if (!INLINED_ENV.SENTRY_DSN) {
-      logger.debug('Sentry disabled: missing SENTRY_DSN')
-    }
-
-    if (installationId) {
-      Sentry.setUser({ id: installationId })
-    }
-    Sentry.setContext('browseros', {
-      install_id: installationId,
-      product: 'browseros',
-      surface: 'server',
-      browseros_version: this.config.instanceBrowserosVersion,
-      chromium_version: this.config.instanceChromiumVersion,
-      server_version: VERSION,
-    })
+    logger.info(
+      'Automatic usage analytics and remote error reporting are disabled',
+    )
   }
 
   private configureLogDirectory(): void {

@@ -7,12 +7,11 @@ use crate::{
     analytics::{error_allowlist::classify, script_fingerprint::fingerprint},
     db::run_error_budget::{BudgetDecision, DAILY_RUN_ERROR_CAP, RunErrorBudgetRepository},
 };
+#[cfg(test)]
 use std::{
     io::Write,
     sync::{Arc, Mutex},
 };
-
-const BUILD_SENTRY_DSN: Option<&str> = option_env!("CLAW_SENTRY_DSN");
 
 /// Everything we are willing to say about one failed run.
 ///
@@ -63,10 +62,12 @@ pub trait RunFailureSink: Send + Sync {
 ///
 /// Nothing is derived from ambient state: no request, no user, no breadcrumbs. Only the
 /// fields above are attached.
+#[cfg(test)]
 pub struct SentrySink {
     client: Arc<sentry::Client>,
 }
 
+#[cfg(test)]
 impl SentrySink {
     /// Returns `None` when the DSN does not parse, so a malformed one downgrades to the
     /// local log rather than to a client that silently drops everything.
@@ -93,6 +94,7 @@ impl SentrySink {
     }
 }
 
+#[cfg(test)]
 impl RunFailureSink for SentrySink {
     fn send(&self, event: RunFailureEvent, delivery: Delivery) {
         if delivery == Delivery::SuppressedByBudget {
@@ -131,10 +133,12 @@ impl RunFailureSink for SentrySink {
 /// Used only when no DSN is configured, so a developer can see the exact redacted payload
 /// without wiring a project up. It writes the same event the network sink would, built by
 /// the same path: if a secret could reach this file, it could reach Sentry.
+#[cfg(test)]
 pub struct FileSink {
     appender: Mutex<tracing_appender::rolling::RollingFileAppender>,
 }
 
+#[cfg(test)]
 impl FileSink {
     pub const FILENAME_PREFIX: &'static str = "run-failures.log";
 
@@ -152,6 +156,7 @@ impl FileSink {
     }
 }
 
+#[cfg(test)]
 impl RunFailureSink for FileSink {
     fn send(&self, event: RunFailureEvent, delivery: Delivery) {
         let status = match delivery {
@@ -181,42 +186,16 @@ pub struct RunFailureReporter {
 }
 
 impl RunFailureReporter {
-    /// Builds a reporter from the ambient configuration. With no DSN this is a reporter
-    /// that refuses everything, which is the correct default for a developer build.
-    /// With a DSN, reports go to Sentry. Without one, they go to a rolling file under
-    /// `log_dir` instead, so the redacted payload is inspectable in development without
-    /// a project to send it to.
+    /// Automatic failure collection is disabled, including its local payload log.
+    /// Runtime and embedded DSNs are deliberately ignored.
     #[must_use]
     pub fn from_env(
         budget: RunErrorBudgetRepository,
         install_id: String,
-        log_dir: &std::path::Path,
+        _log_dir: &std::path::Path,
     ) -> Self {
-        let dsn = std::env::var("CLAW_SENTRY_DSN")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| BUILD_SENTRY_DSN.map(str::to_string))
-            .filter(|value| !value.trim().is_empty());
-        let sentry = dsn.as_deref().and_then(|dsn| {
-            let sink = SentrySink::new(dsn);
-            if sink.is_none() {
-                // A DSN that yields no client is a misbuilt release, not a developer
-                // build, and must not read as the routine "no DSN" case below.
-                tracing::warn!("Sentry DSN is configured but unusable; run failures stay local");
-            }
-            sink
-        });
-        let sink = match sentry {
-            Some(sentry) => Some(Box::new(sentry) as Box<dyn RunFailureSink>),
-            None => {
-                tracing::info!(
-                    directory = %log_dir.display(),
-                    "run failures are not sent to Sentry; writing them to {}",
-                    FileSink::FILENAME_PREFIX
-                );
-                FileSink::new(log_dir).map(|sink| Box::new(sink) as Box<dyn RunFailureSink>)
-            }
-        };
+        // No automatic reporting or payload logging, regardless of embedded DSNs.
+        let sink = None;
         Self {
             sink,
             budget,
@@ -225,6 +204,7 @@ impl RunFailureReporter {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn with_sink(
         sink: Box<dyn RunFailureSink>,
@@ -297,6 +277,21 @@ mod tests {
     use tempfile::tempdir;
 
     const NOW: i64 = 1_789_560_000_000; // 2026-09-16T12:00:00Z
+
+    #[tokio::test]
+    async fn automatic_reporter_has_no_sink_or_payload_log() -> anyhow::Result<()> {
+        let root = tempdir()?;
+        let database = Database::open(root.path().join("test.db")).await?;
+        let reporter = RunFailureReporter::from_env(
+            RunErrorBudgetRepository::new(database),
+            "test-install".to_string(),
+            &root.path().join("payload-logs"),
+        );
+        assert!(!reporter.is_configured());
+        assert!(!reporter.report(true, "throw 1", "error", 10, NOW).await);
+        assert!(!root.path().join("payload-logs").exists());
+        Ok(())
+    }
 
     #[derive(Default)]
     struct RecordingSink {
@@ -579,10 +574,8 @@ mod file_sink_tests {
         ))
     }
 
-    /// Whichever sink `from_env` picks, it must pick one. The earlier behaviour, where a
-    /// missing DSN meant reporting nothing at all, is what this replaces.
     #[tokio::test]
-    async fn from_env_always_resolves_to_some_sink() -> anyhow::Result<()> {
+    async fn from_env_never_activates_an_automatic_sink() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let db = Database::open(dir.path().join("browserclaw.sqlite")).await?;
         let reporter = RunFailureReporter::from_env(
@@ -590,10 +583,8 @@ mod file_sink_tests {
             "install".to_string(),
             &dir.path().join("logs"),
         );
-        assert!(
-            reporter.is_configured(),
-            "a missing DSN should downgrade to the log, not to silence"
-        );
+        assert!(!reporter.is_configured());
+        assert!(!dir.path().join("logs").exists());
         Ok(())
     }
 

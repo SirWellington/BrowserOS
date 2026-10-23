@@ -1,13 +1,9 @@
 import { REPORTER_EXTENSION_ID } from '@browseros/diagnostics/contract'
-import { sentryVitePlugin } from '@sentry/vite-plugin'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'wxt'
 import { archiveSourceMaps } from './lib/build/archive-source-maps'
 import { LEGACY_AGENT_EXTENSION_ID } from './lib/constants/legacyAgentExtensionId'
 import { PRODUCT_WEB_HOST } from './lib/constants/productWebHost'
-
-// biome-ignore lint/style/noProcessEnv: build config file needs env access
-const env = process.env
 
 // See https://wxt.dev/api/config.html
 // Extension ID will be bflpfmnmnokmjhmgnolecpppdbdophmk
@@ -15,7 +11,7 @@ export default defineConfig({
   outDir: 'dist',
   modules: ['@wxt-dev/module-react'],
   hooks: {
-    // All Vite builds (including Sentry uploads) finish before this hook; WXT's
+    // All Vite builds finish before this hook; WXT's
     // ZIP and the release CRX packer then consume the extension without maps.
     'build:done': (wxt, output) => archiveSourceMaps(wxt.config, output),
   },
@@ -78,18 +74,7 @@ export default defineConfig({
     build: {
       sourcemap: 'hidden',
     },
-    plugins: [
-      tailwindcss(),
-      ...(env.SENTRY_AUTH_TOKEN
-        ? [
-            sentryVitePlugin({
-              org: env.SENTRY_ORG,
-              project: env.SENTRY_PROJECT,
-              authToken: env.SENTRY_AUTH_TOKEN,
-              // archiveSourceMaps retains full maps after every upload finishes.
-            }),
-          ]
-        : []),
-    ],
+    // No automatic Sentry build telemetry or source-map uploads.
+    plugins: [tailwindcss()],
   }),
 })

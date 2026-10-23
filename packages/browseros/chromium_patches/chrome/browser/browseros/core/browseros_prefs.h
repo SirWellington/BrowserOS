@@ -1,9 +1,9 @@
 diff --git a/chrome/browser/browseros/core/browseros_prefs.h b/chrome/browser/browseros/core/browseros_prefs.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..19e8b58261088485efa15d05db4819df283d81a7
+index 0000000000000000000000000000000000000000..baac69b6b71fc447e2632045fb34c8cfa53897d6
 --- /dev/null
 +++ b/chrome/browser/browseros/core/browseros_prefs.h
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,130 @@
 +// Copyright 2025 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -120,10 +120,6 @@ index 0000000000000000000000000000000000000000..19e8b58261088485efa15d05db4819df
 +//   - Action's visibility pref is true
 +// Returns false if action's visibility pref is false.
 +bool ShouldShowToolbarAction(actions::ActionId id, PrefService* pref_service);
-+
-+// Check if a BrowserOS extension should be pinned from its catalog metadata.
-+bool ShouldPinBrowserOSExtension(const std::string& extension_id,
-+                                 PrefService* pref_service);
 +
 +// Check if NTP content should receive focus instead of the omnibox.
 +bool IsNtpFocusContentEnabled(PrefService* pref_service);

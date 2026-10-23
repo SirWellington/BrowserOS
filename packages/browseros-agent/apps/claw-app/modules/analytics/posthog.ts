@@ -3,31 +3,13 @@
  * Copyright 2025 BrowserOS
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Locked-down posthog-js wrapper for the cockpit UI.
- *
- * Privacy stance mirrors the server: measure the product, never the
- * user. This module is imported ONLY by the cockpit newtab surface,
- * never by the recorder content script or background worker, so
- * analytics never runs on the pages the user browses.
- *
- * posthog-js defaults are aggressively disabled: no autocapture (would
- * read DOM text), no automatic pageviews, no feature-flag polling, no
- * console recording, and no client-created person profiles. The server may
- * link historical UUIDs through an alias with no profile properties. A 20% sample of consenting
- * cockpit sessions may be recorded with inputs masked, task-bearing DOM
- * blocked, and replay URLs replaced by a fixed token. Auto-captured location properties
- * (`$current_url` etc.) are stripped so even the cockpit's own extension
- * URL never leaves. Identity is the server's canonical analytics.json UUID, set
- * via `bootstrap.distinctID` (no `identify`, no PII).
- *
- * Gated on a build-time project write key (`VITE_CLAW_POSTHOG_KEY`) and
- * the user's consent. With no key, or before consent, nothing is
- * initialised and every capture no-ops.
+ * Automatic cockpit telemetry is hard-disabled. No SDK or recorder is loaded.
+ * Configuration/sanitization helpers remain for compatibility and tests only;
+ * neither build keys nor server-reported consent can activate capture.
  */
 
-import posthog, { type PostHog, type PostHogConfig } from 'posthog-js'
-import 'posthog-js/dist/posthog-recorder'
-import { POSTHOG_HOST as HOST, POSTHOG_KEY as KEY } from './posthog-config'
+import type { PostHog, PostHogConfig } from 'posthog-js'
+import { POSTHOG_HOST as HOST } from './posthog-config'
 
 const REDACTED_REPLAY_URL = 'browserclaw://redacted'
 
@@ -44,7 +26,6 @@ const STRIPPED_PROPS = [
   '$initial_referring_domain',
 ]
 
-let initialised = false
 const captureStateListeners = new Set<() => void>()
 const flagListeners = new Set<() => void>()
 
@@ -55,17 +36,9 @@ const flagListeners = new Set<() => void>()
  * upstream disappears instead of lingering for the life of the tab.
  */
 let enabledFlags: ReadonlySet<string> = new Set()
-let lastCaptureState = false
 
 function notifyFlagListeners(): void {
   for (const listener of flagListeners) listener()
-}
-
-function notifyCaptureStateListeners(): void {
-  const nextCaptureState = isCapturing()
-  if (nextCaptureState === lastCaptureState) return
-  lastCaptureState = nextCaptureState
-  for (const listener of captureStateListeners) listener()
 }
 
 export function sanitizeProperties(
@@ -159,17 +132,6 @@ export function reconcileSessionRecording(
   }
 }
 
-function init(distinctId: string): void {
-  initialised = true
-  posthog.init(KEY as string, createPostHogConfig(distinctId))
-  // A component cannot read a flag during render and expect to hear about the
-  // answer: isFeatureEnabled returns whatever is cached and re-renders nothing.
-  // The callback is what turns the arrival into a render.
-  posthog.onFeatureFlags((flags) => {
-    applyFlags(flags)
-  })
-}
-
 /** Records the evaluated flags and tells React. Exported for tests. */
 export function applyFlags(flags: readonly string[]): void {
   enabledFlags = new Set(flags)
@@ -208,33 +170,17 @@ export function reconcileTelemetryIdentity(
   client.reset({ bootstrap: { distinctID: distinctId, isIdentifiedID: false } })
 }
 
-/**
- * Reconciles the posthog client with the server's EFFECTIVE telemetry
- * state. `enabled` already folds in the user's consent, the operator
- * kill-switch, and the server key, so the cockpit respects all three by
- * gating on it. Initialises on first enable, opts in/out on later
- * changes, resets a changed identity before resuming capture, and no-ops
- * without a Vite key. Safe to call repeatedly.
- */
-export function applyTelemetry(input: {
+/** Compatibility entry point; server settings cannot enable telemetry. */
+export function applyTelemetry(_input: {
   distinctId: string
   enabled: boolean
 }): void {
-  if (!KEY) return
-  if (input.enabled && input.distinctId) {
-    const wasInitialised = initialised
-    if (!wasInitialised) init(input.distinctId)
-    else reconcileTelemetryIdentity(posthog, input.distinctId)
-    reconcileSessionRecording(posthog, true, wasInitialised)
-  } else {
-    reconcileSessionRecording(posthog, false, initialised)
-  }
-  notifyCaptureStateListeners()
+  // Hard-disabled independently of server consent and embedded build keys.
 }
 
-/** Whether posthog is initialised AND currently opted in to capturing. */
+/** Capture is unavailable in this build. */
 export function isCapturing(): boolean {
-  return initialised && !posthog.has_opted_out_capturing()
+  return false
 }
 
 /** Subscribes React consumers to changes in effective capture readiness. */
@@ -245,9 +191,8 @@ export function subscribeToCaptureState(listener: () => void): () => void {
 
 /** Fire-and-forget event. No-ops until capturing. */
 export function capture(
-  event: string,
-  properties?: Record<string, unknown>,
+  _event: string,
+  _properties?: Record<string, unknown>,
 ): void {
-  if (!isCapturing()) return
-  posthog.capture(event, properties)
+  // No SDK is loaded and no events are buffered.
 }

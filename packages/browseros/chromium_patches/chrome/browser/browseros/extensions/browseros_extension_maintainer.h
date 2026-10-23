@@ -1,9 +1,9 @@
 diff --git a/chrome/browser/browseros/extensions/browseros_extension_maintainer.h b/chrome/browser/browseros/extensions/browseros_extension_maintainer.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..91309ee51786772b70a1576f9148f646844fddb6
+index 0000000000000000000000000000000000000000..185656ce3a1c7940e20334bd8a080cc947d973e1
 --- /dev/null
 +++ b/chrome/browser/browseros/extensions/browseros_extension_maintainer.h
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,73 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -64,7 +64,6 @@ index 0000000000000000000000000000000000000000..91309ee51786772b70a1576f9148f646
 +  static base::DictValue ParseConfigJson(const std::string& json_content);
 +  void Complete(base::DictValue prefs);
 +  void UninstallInactiveProductExtensions();
-+  void ReenableDisabledExtensions();
 +  void LogExtensionHealth(const std::string& context);
 +
 +  raw_ptr<Profile> profile_;

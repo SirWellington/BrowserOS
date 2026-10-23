@@ -1,6 +1,15 @@
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "Disabled alias delivery retains allowlist regression tests"
+)]
 mod aliases;
 pub mod drift_guards;
 pub mod error_allowlist;
+#[expect(
+    dead_code,
+    reason = "Disabled delivery retains event schemas and their regression tests"
+)]
 pub mod events;
 mod installation;
 pub mod script_fingerprint;

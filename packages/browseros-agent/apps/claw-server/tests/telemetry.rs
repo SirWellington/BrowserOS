@@ -64,7 +64,7 @@ async fn roundtrip_case(root: &Path) -> anyhow::Result<()> {
     let (status, initial) =
         request_json(&router, "GET", "/api/v1/settings/telemetry", None).await?;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(initial["enabled"], true);
+    assert_eq!(initial["enabled"], false);
     assert_eq!(initial["consent"], true);
     let distinct_id = initial["distinctId"]
         .as_str()
@@ -115,7 +115,7 @@ async fn roundtrip_case(root: &Path) -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(enabled["enabled"], true);
+    assert_eq!(enabled["enabled"], false);
     assert_eq!(enabled["consent"], true);
     Ok(())
 }

@@ -2,15 +2,7 @@ diff --git a/chrome/app/chrome_crash_reporter_client.cc b/chrome/app/chrome_cras
 index 64912e538f3b0b4acfbb21e0cd94a27b4329c7a2..fecf93d66ea720a3c4dab020e89037e1b76757fd 100644
 --- a/chrome/app/chrome_crash_reporter_client.cc
 +++ b/chrome/app/chrome_crash_reporter_client.cc
-@@ -17,6 +17,7 @@
- #include "base/strings/utf_string_conversions.h"
- #include "build/branding_buildflags.h"
- #include "build/build_config.h"
-+#include "chrome/browser/browseros/core/browseros_constants.h"
- #include "chrome/common/channel_info.h"
- #include "chrome/common/chrome_paths.h"
- #include "chrome/common/chrome_paths_internal.h"
-@@ -134,19 +135,19 @@ void ChromeCrashReporterClient::GetProductInfo(ProductInfo* product_info) {
+@@ -134,19 +134,19 @@ void ChromeCrashReporterClient::GetProductInfo(ProductInfo* product_info) {
  
    const char* product_name = "";
  #if BUILDFLAG(IS_ANDROID)
@@ -36,7 +28,7 @@ index 64912e538f3b0b4acfbb21e0cd94a27b4329c7a2..fecf93d66ea720a3c4dab020e89037e1
  #else
    NOTREACHED();
  #endif
-@@ -172,42 +173,8 @@ bool ChromeCrashReporterClient::IsRunningUnattended() {
+@@ -172,42 +172,8 @@ bool ChromeCrashReporterClient::IsRunningUnattended() {
  }
  
  bool ChromeCrashReporterClient::GetCollectStatsConsent() {
@@ -76,16 +68,16 @@ index 64912e538f3b0b4acfbb21e0cd94a27b4329c7a2..fecf93d66ea720a3c4dab020e89037e1
 -          << " so returning that";
 -  return settings_consent;
 -#endif  // BUILDFLAG(IS_ANDROID)
-+  // Enable crash reporting.
-+  return true;
++  // Automatic crash uploads are disabled; no consent is assumed.
++  return false;
  }
  
  #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-@@ -250,3 +217,7 @@ ChromeCrashReporterClient::GetUserStreamSharedMemoryRegions() {
+@@ -250,3 +216,7 @@ ChromeCrashReporterClient::GetUserStreamSharedMemoryRegions() {
  
    return streams;
  }
 +
 +std::string ChromeCrashReporterClient::GetUploadUrl() {
-+  return browseros::kSentryMinidumpUrl;
++  return std::string();
 +}

@@ -1,9 +1,9 @@
 diff --git a/chrome/browser/browseros/extensions/browseros_extension_loader.cc b/chrome/browser/browseros/extensions/browseros_extension_loader.cc
 new file mode 100644
-index 0000000000000000000000000000000000000000..c7fb41d2ca313acc489b49396a4116659ae3eb7e
+index 0000000000000000000000000000000000000000..65d373a25b025c3d254cdbc608fb615e0b5860f6
 --- /dev/null
 +++ b/chrome/browser/browseros/extensions/browseros_extension_loader.cc
-@@ -0,0 +1,645 @@
+@@ -0,0 +1,652 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -29,7 +29,6 @@ index 0000000000000000000000000000000000000000..c7fb41d2ca313acc489b49396a411665
 +#include "components/prefs/scoped_user_pref_update.h"
 +#include "content/public/browser/browser_thread.h"
 +#include "extensions/browser/delayed_install_manager.h"
-+#include "extensions/browser/disable_reason.h"
 +#include "extensions/browser/extension_prefs.h"
 +#include "extensions/browser/extension_registrar.h"
 +#include "extensions/browser/extensions_browser_client.h"
@@ -303,6 +302,13 @@ index 0000000000000000000000000000000000000000..c7fb41d2ca313acc489b49396a411665
 +    PostResult(std::move(callback), false);
 +    return;
 +  }
++  auto* extension_prefs = extensions::ExtensionPrefs::Get(profile_);
++  if (extension_prefs->IsExternalExtensionUninstalled(primary_id_) ||
++      extension_prefs->IsExtensionDisabled(primary_id_)) {
++    // Retry/onboarding must not undo a deliberate removal or disablement.
++    PostResult(std::move(callback), false);
++    return;
++  }
 +  if (local_discovery_complete_ && IsPrimaryReady()) {
 +    PostResult(std::move(callback), true);
 +    return;
@@ -390,6 +396,10 @@ index 0000000000000000000000000000000000000000..c7fb41d2ca313acc489b49396a411665
 +  base::DictValue prefs;
 +  auto* registry = extensions::ExtensionRegistry::Get(profile_);
 +  for (const std::string& id : GetActiveBrowserOSExtensionIds()) {
++    if (extensions::ExtensionPrefs::Get(profile_)
++            ->IsExternalExtensionUninstalled(id)) {
++      continue;  // Keep removal effective across maintenance and restarts.
++    }
 +    const auto* local = bundled_prefs_.FindDict(id);
 +    const auto* remote = remote_prefs_.FindDict(id);
 +    if (NeedsLocalInstall(id)) {
@@ -416,6 +426,11 @@ index 0000000000000000000000000000000000000000..c7fb41d2ca313acc489b49396a411665
 +
 +void BrowserOSExtensionLoader::BeginReadiness() {
 +  if (waiting_for_ready_ || !profile_) {
++    return;
++  }
++  auto* extension_prefs = extensions::ExtensionPrefs::Get(profile_);
++  if (extension_prefs->IsExternalExtensionUninstalled(primary_id_) ||
++      extension_prefs->IsExtensionDisabled(primary_id_)) {
 +    return;
 +  }
 +  waiting_for_ready_ = true;
@@ -446,25 +461,17 @@ index 0000000000000000000000000000000000000000..c7fb41d2ca313acc489b49396a411665
 +  auto* registrar = extensions::ExtensionRegistrar::Get(profile_);
 +  if (registry->terminated_extensions().Contains(primary_id_)) {
 +    registrar->ReloadExtension(primary_id_);
-+  } else if (registry->disabled_extensions().Contains(primary_id_)) {
-+    // Recover user/prompt disablement of a managed product extension, but do
-+    // not clear corruption, policy or other safety-related disable reasons.
-+    const auto reasons =
-+        extensions::ExtensionPrefs::Get(profile_)->GetDisableReasons(
-+            primary_id_);
-+    for (auto reason : reasons) {
-+      if (reason != extensions::disable_reason::DISABLE_USER_ACTION &&
-+          reason != extensions::disable_reason::DISABLE_EXTERNAL_EXTENSION &&
-+          reason != extensions::disable_reason::DISABLE_PERMISSIONS_INCREASE) {
-+        return;
-+      }
-+    }
-+    registrar->EnableExtension(primary_id_);
 +  }
 +}
 +
 +void BrowserOSExtensionLoader::AdvanceReadiness() {
 +  if (!profile_ || !waiting_for_ready_ || !local_discovery_complete_) {
++    return;
++  }
++  auto* extension_prefs = extensions::ExtensionPrefs::Get(profile_);
++  if (extension_prefs->IsExternalExtensionUninstalled(primary_id_) ||
++      extension_prefs->IsExtensionDisabled(primary_id_)) {
++    FinishReadiness(false);
 +    return;
 +  }
 +  if (IsPrimaryReady()) {

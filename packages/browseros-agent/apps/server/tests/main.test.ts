@@ -93,7 +93,7 @@ describe('Application.start', () => {
       expect.objectContaining({ install_id: installationId }),
     )
     expect(metricsInitialize.mock.calls[0]?.[0]).not.toHaveProperty('client_id')
-    expect(sentrySetUser).toHaveBeenCalledWith({ id: installationId })
+    expect(sentrySetUser).not.toHaveBeenCalled()
   })
 })
 

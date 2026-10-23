@@ -295,7 +295,7 @@ mod tests {
     use super::{AppRuntime, ShutdownHandle};
     use crate::{
         AppState,
-        analytics::{AnalyticsService, events},
+        analytics::AnalyticsService,
         config::Config,
         db::{
             DATABASE_FILENAME, Database,
@@ -519,7 +519,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_drains_session_events_before_shutting_down_analytics() -> anyhow::Result<()> {
+    async fn runtime_keeps_local_session_summaries_without_sending_analytics() -> anyhow::Result<()>
+    {
         let root = tempdir()?;
         let config = Arc::new(Config {
             server_port: 9200,
@@ -555,7 +556,6 @@ mod tests {
             AnalyticsService::new_for_test(&config.browserclaw_dir, Some("test-key"), host, true)
                 .await?,
         );
-        let install_id = analytics.get_state().await.distinct_id;
         state.analytics = analytics.clone();
         let session_efficiency = Arc::new(SessionEfficiencyService::new_with_analytics(
             Database::open(config.browserclaw_dir.join(DATABASE_FILENAME)).await?,
@@ -606,67 +606,17 @@ mod tests {
             .await;
 
         AppRuntime::start(state).shutdown().await?;
-        let task_duration_ms = audit_log
+        let summary = audit_log
             .get_task_summary("shutdown-session")
             .await?
-            .ok_or_else(|| anyhow::anyhow!("task summary missing"))?
-            .duration_ms;
+            .ok_or_else(|| anyhow::anyhow!("task summary missing"))?;
+        assert!(summary.duration_ms >= 0);
         assert_eq!(analytics.shutdown_calls_for_testing(), 1);
         let mut captured = Vec::new();
         while let Ok(request) = requests.try_recv() {
             captured.extend(request["batch"].as_array().into_iter().flatten().cloned());
         }
-        let ended = captured
-            .iter()
-            .find(|event| event["event"] == events::AGENT_SESSION_ENDED.name())
-            .ok_or_else(|| anyhow::anyhow!("session-end event was not drained"))?;
-        assert_eq!(
-            ended["properties"],
-            json!({
-                "kind": "closed",
-                "client_name": "codex",
-                "dispatch_count": 1,
-                "distinct_tool_count": 1,
-                "max_concurrent_used_sessions": 1,
-                "server_version": env!("CARGO_PKG_VERSION"),
-                "os_platform": events::platform_token(),
-                "install_id": install_id.clone(),
-                "product": "browserclaw",
-                "surface": "server",
-                "$process_person_profile": false,
-                "$is_server": true,
-            })
-        );
-        let efficiency = captured
-            .iter()
-            .find(|event| event["event"] == events::AGENT_SESSION_EFFICIENCY_COMPUTED.name())
-            .ok_or_else(|| anyhow::anyhow!("session-efficiency event was not drained"))?;
-        assert_eq!(
-            efficiency["properties"],
-            json!({
-                "kind": "closed",
-                "client_name": "codex",
-                "dispatch_count": 1,
-                "active_duration_ms": task_duration_ms,
-                "tool_input_token_estimate": 1,
-                "tool_output_token_estimate": 0,
-                "browserclaw_token_estimate": 1,
-                "screenshot_baseline_token_estimate": 3_000,
-                "screenshot_first_token_estimate": 3_001,
-                "raw_token_savings_estimate": 3_000,
-                "efficiency_estimator_version": 4,
-                "screenshot_baseline_width": 1_920,
-                "screenshot_baseline_height": 1_080,
-                "screenshot_tokens_per_dispatch": 3_000,
-                "server_version": env!("CARGO_PKG_VERSION"),
-                "os_platform": events::platform_token(),
-                "install_id": install_id,
-                "product": "browserclaw",
-                "surface": "server",
-                "$process_person_profile": false,
-                "$is_server": true,
-            })
-        );
+        assert!(captured.is_empty());
         endpoint.abort();
         Ok(())
     }

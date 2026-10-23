@@ -2,24 +2,15 @@ diff --git a/chrome/browser/chrome_browser_main.cc b/chrome/browser/chrome_brows
 index cbf3b6c563090a64c427e1b0ce8cbf7118aa82d2..d7e0df4e0d32f03c726428f932565b98b356424b 100644
 --- a/chrome/browser/chrome_browser_main.cc
 +++ b/chrome/browser/chrome_browser_main.cc
-@@ -34,6 +34,8 @@
+@@ -34,6 +34,7 @@
  #include "chrome/browser/browser_features.h"
  #include "chrome/browser/browser_process.h"
  #include "chrome/browser/browser_process_impl.h"
-+#include "chrome/browser/browseros/metrics/browseros_metrics_extra_parts.h"
 +#include "chrome/browser/browseros/server/browseros_server_manager.h"
  #include "chrome/browser/chrome_browser_main_extra_parts.h"
  #include "chrome/browser/component_updater/registration.h"
  #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
-@@ -843,6 +845,7 @@ std::unique_ptr<content::BrowserMainParts> ChromeBrowserMainParts::Create(
-   main_parts->AddParts(std::make_unique<ChromeBrowserMainExtraPartsMemory>());
- 
-   chrome::AddMetricsExtraParts(main_parts.get());
-+  browseros_metrics::AddBrowserOSMetricsExtraParts(main_parts.get());
- 
-   main_parts->AddParts(
-       std::make_unique<
-@@ -1359,6 +1362,43 @@ int ChromeBrowserMainParts::PreCreateThreadsImpl() {
+@@ -1359,6 +1360,43 @@ int ChromeBrowserMainParts::PreCreateThreadsImpl() {
    }
  #endif
  
@@ -63,7 +54,7 @@ index cbf3b6c563090a64c427e1b0ce8cbf7118aa82d2..d7e0df4e0d32f03c726428f932565b98
  #if BUILDFLAG(IS_MAC)
  #if defined(ARCH_CPU_X86_64)
    // The use of Rosetta to run the x64 version of Chromium on Arm is neither
-@@ -1963,6 +2003,12 @@ int ChromeBrowserMainParts::PreMainMessageLoopRunImpl() {
+@@ -1963,6 +2001,12 @@ int ChromeBrowserMainParts::PreMainMessageLoopRunImpl() {
      g_browser_process->CreateDevToolsAutoOpener();
    }
  
@@ -76,7 +67,7 @@ index cbf3b6c563090a64c427e1b0ce8cbf7118aa82d2..d7e0df4e0d32f03c726428f932565b98
    // Needs to be done before PostProfileInit, since the SODA Installer setup is
    // called inside PostProfileInit and depends on it.
    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-@@ -2267,6 +2313,10 @@ void ChromeBrowserMainParts::PostMainMessageLoopRun() {
+@@ -2267,6 +2311,10 @@ void ChromeBrowserMainParts::PostMainMessageLoopRun() {
      chrome_extra_part->PostMainMessageLoopRun();
    }
  

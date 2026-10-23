@@ -130,6 +130,7 @@ patches.
 
 ## Related Resources
 
+- [Privacy and user-control audit](PRIVACY_AUDIT.md)
 - [Chromium Build Instructions](https://chromium.googlesource.com/chromium/src/+/main/docs/linux/build_instructions.md)
 - [ungoogled-chromium](https://github.com/ungoogled-software/ungoogled-chromium) — upstream privacy patches
 - [BrowserOS Agent Platform](../browseros-agent/) — the TypeScript/Go agent system that runs inside the browser

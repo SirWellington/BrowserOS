@@ -27,18 +27,3 @@ index b3eec417cffd098be797515c47ef09a415f91a87..a1feaa9143678a0b5d4aceab2f68bd2a
    if (IsUpdateUrlOverridden(extension.id())) {
      DCHECK(!extension.was_installed_by_default())
          << "Update URL should not be overridden for default-installed "
-@@ -610,6 +621,14 @@ ExtensionIdSet ExtensionManagement::GetForcePinnedList() const {
-       force_pinned_list.insert(entry.first);
-     }
-   }
-+
-+  // Always force-pin BrowserOS extensions that are marked pinned.
-+  for (const auto& extension_id : browseros::GetActiveBrowserOSExtensionIds()) {
-+    if (browseros::IsBrowserOSPinnedExtension(extension_id)) {
-+      force_pinned_list.insert(extension_id);
-+    }
-+  }
-+
-   return force_pinned_list;
- }
- 

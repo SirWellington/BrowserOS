@@ -1,9 +1,9 @@
 diff --git a/chrome/browser/browseros/extensions/browseros_extension_maintainer.cc b/chrome/browser/browseros/extensions/browseros_extension_maintainer.cc
 new file mode 100644
-index 0000000000000000000000000000000000000000..f061377c17fccfdaf687ab5201b4c82f6dea3fcc
+index 0000000000000000000000000000000000000000..2d081bf99b6e13a1a416d9353b8e9d9edc5db835
 --- /dev/null
 +++ b/chrome/browser/browseros/extensions/browseros_extension_maintainer.cc
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,264 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -175,7 +175,6 @@ index 0000000000000000000000000000000000000000..f061377c17fccfdaf687ab5201b4c82f
 +void BrowserOSExtensionMaintainer::MaintainInstalledExtensions() {
 +  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 +  UninstallInactiveProductExtensions();
-+  ReenableDisabledExtensions();
 +  LogExtensionHealth("maintenance");
 +}
 +
@@ -210,33 +209,6 @@ index 0000000000000000000000000000000000000000..f061377c17fccfdaf687ab5201b4c82f
 +            id, extensions::UNINSTALL_REASON_ORPHANED_EXTERNAL_EXTENSION,
 +            &error)) {
 +      LOG(WARNING) << "browseros: Failed to uninstall " << id << ": " << error;
-+    }
-+  }
-+}
-+
-+void BrowserOSExtensionMaintainer::ReenableDisabledExtensions() {
-+  auto* registry = extensions::ExtensionRegistry::Get(profile_);
-+  auto* registrar = extensions::ExtensionRegistrar::Get(profile_);
-+  for (const auto& id : GetActiveBrowserOSExtensionIds()) {
-+    if (!registry->disabled_extensions().Contains(id)) {
-+      continue;
-+    }
-+    // Keep product extensions usable, but never clear corruption, policy or
-+    // other safety disablement just because a maintenance timer fired.
-+    const auto reasons =
-+        extensions::ExtensionPrefs::Get(profile_)->GetDisableReasons(id);
-+    bool can_reenable = true;
-+    for (auto reason : reasons) {
-+      if (reason != extensions::disable_reason::DISABLE_USER_ACTION &&
-+          reason != extensions::disable_reason::DISABLE_EXTERNAL_EXTENSION &&
-+          reason != extensions::disable_reason::DISABLE_PERMISSIONS_INCREASE) {
-+        can_reenable = false;
-+        break;
-+      }
-+    }
-+    if (can_reenable) {
-+      LOG(INFO) << "browseros: Re-enabling managed extension " << id;
-+      registrar->EnableExtension(id);
 +    }
 +  }
 +}

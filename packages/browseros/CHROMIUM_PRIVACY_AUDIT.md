@@ -45,10 +45,37 @@ dependency-sync attempt failed after upstream returned HTTP 429 fetching
 `third_party/vulkan-tools/src`. A second attempt progressed further, then CIPD
 stopped while opening the cached Chromium package
 `chromium/third_party/updater/chrome_win_x86`; the local security scanner
-reported that the instance contained a virus or potentially unwanted software.
-The build was not allowed to bypass that block, disable security protection, or
-omit the dependency. Chromium configuration and compilation have not started;
-the source/dependency checkout is not yet fully synchronized.
+reported that the instance contained a virus or potentially unwanted software
+(label `Trojan:Win32/Suschil!rfn`). The build was not allowed to bypass that
+block, disable security protection, or omit the dependency, and no Windows
+Defender exclusion was added.
+
+The Suschil detection was assessed as very likely a false positive: it is a
+heuristic label with no documented malware family, the flagged file was never
+executed (`DidThreatExecute=False`), and the CIPD instance chain was verified as
+official — the `chrome_win_x86` instance was registered by Chromium's builder
+service account with a SLSA attestation, and CIPD instance IDs encode the
+zip's SHA-256. Because the hit was a heuristic label on a package the 64-bit
+build never uses, the chosen fix was to stop fetching it, not to suppress the
+scanner.
+
+`packages/browseros/tools/patch_deps_updater.py` (wired into `build.bat` before
+`browseros build`, with regression tests) idempotently drops the eight unused
+32-bit/arm64 Windows updater CIPD entries from `C:\chromium\src\DEPS` and keeps
+the four `x86_64` entries the 64-bit installer needs. With the patch applied,
+`source_sync` completed successfully (282.0s); the HTTP 429 and the
+security-scanner stall did not recur, and the remaining CIPD packages verified
+cleanly. This workaround is committed as `63a0b395e`.
+
+The build then failed at the next step, `windows_sdk`: Chromium 155 is pinned to
+Windows SDK `10.0.28000.2270` (family `10.0.28000.0`) with x86/x64 Desktop C++
+and Debugging Tools, and the machine has only `10.1.26100.7705` registered.
+Local builds check for the SDK but do not install it; installing it is a
+machine-wide, elevated operation the build cannot perform. Once the SDK is
+installed, `build.bat` must be rerun — ninja resumes from the `windows_sdk`
+step and proceeds through `compile`, `mini_installer`, and `package_windows`.
+Configuration, compilation, and runtime traffic verification are therefore
+still pending.
 
 ## Findings in the old patched tree
 
@@ -104,6 +131,21 @@ generating new extension signing identities. `build.bat` now defaults to
 This mode does not audit arbitrary third-party extensions a user installs or
 organization policy controls. It also does not suppress functional data exchange
 with a model provider or website that a user explicitly chooses to use.
+
+## Evaluated alternative: ungoogled-chromium plus a built-in MCP server
+
+As a potential replacement, ungoogled-chromium was forked locally to
+`C:\Users\moreno\Documents\Code\LocalAI\ungoogled-chromium` (main repo:
+110 patches tracking Chromium `156.0.8078.47`; Windows repo: 27 additional
+patches). A design for shipping a built-in MCP server comparable to BrowserOS
+neo was written to
+`C:\Users\moreno\Documents\Code\LocalAI\ungoogled-chromium\DESIGN-builtin-mcp-server.md`.
+It recommends a native Rust sidecar (`ungoogled-mcp`) launched by the browser,
+owning a loopback CDP connection (via `--remote-debugging-port=0` and the
+`DevToolsActivePort` file) and exposing the same tool surface as neo — the same
+architecture class as neo's `claw-server` — with an estimated effort of about
+4–5 months for one engineer. This is a design proposal, not a built or tested
+replacement.
 
 ## Verification gates
 

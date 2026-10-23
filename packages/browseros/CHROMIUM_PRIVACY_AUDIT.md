@@ -10,8 +10,9 @@ binaries must not be treated as the result of this build.
 On 2026-10-22 the checkout at `C:\chromium\src` was on Chromium 151, commit
 `8f5d36bc16f57115aeeff34baf4ad6aa964d509c`, with an older BrowserOS patch set.
 The project now pins Chromium `155.0.8059.26` and a newer BrowserOS patch base.
-The build is being run with source-built agent resources, `CORE_ONLY=yes`, and
-signing/upload disabled. Completion and runtime traffic verification are pending.
+The build is configured for source-built agent resources, `CORE_ONLY=yes`, and
+signing/upload disabled. Chromium compilation and runtime traffic verification
+are pending.
 
 Before updating source, tracked and untracked local changes were preserved in
 Chromium's Git stash as `db1a40103f9d8776d6f0643254caabafe2302145`.
@@ -38,10 +39,16 @@ A `--from source_sync` attempt was refused by the checkpoint validator because
 exact published-component pins were unavailable. That check was not bypassed;
 the next attempt uses the complete plan with `--no-clean`.
 
-The complete-plan retry successfully checked out Chromium commit
-`16c3e55476d3564bea713314b2fff638749ce3e6` for the supported 155 pin.
-Dependency synchronization is still running; this does not yet establish a
-fully synchronized or privacy-patched source tree.
+The complete-plan retry checked out Chromium commit
+`16c3e55476d3564bea713314b2fff638749ce3e6` for the supported 155 pin. The first
+dependency-sync attempt failed after upstream returned HTTP 429 fetching
+`third_party/vulkan-tools/src`. A second attempt progressed further, then CIPD
+stopped while opening the cached Chromium package
+`chromium/third_party/updater/chrome_win_x86`; the local security scanner
+reported that the instance contained a virus or potentially unwanted software.
+The build was not allowed to bypass that block, disable security protection, or
+omit the dependency. Chromium configuration and compilation have not started;
+the source/dependency checkout is not yet fully synchronized.
 
 ## Findings in the old patched tree
 

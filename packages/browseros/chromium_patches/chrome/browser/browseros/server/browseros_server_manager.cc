@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..19919de8931b03b7ae7cf772f9e98b0d907259cd
 --- /dev/null
 +++ b/chrome/browser/browseros/server/browseros_server_manager.cc
-@@ -0,0 +1,1558 @@
+@@ -0,0 +1,1562 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -33,6 +33,7 @@ index 0000000000000000000000000000000000000000..19919de8931b03b7ae7cf772f9e98b0d
 +#include "chrome/browser/browser_process.h"
 +#include "chrome/browser/browseros/core/browseros_switches.h"
 +#include "chrome/browser/browseros/metrics/browseros_metrics.h"
++#include "chrome/browser/browseros/core/browseros_product.h"
 +#include "chrome/browser/browseros/server/browseros_server_config.h"
 +#include "chrome/browser/browseros/server/browseros_server_constants.h"
 +#include "chrome/browser/browseros/server/browseros_server_prefs.h"
@@ -868,6 +869,9 @@ index 0000000000000000000000000000000000000000..19919de8931b03b7ae7cf772f9e98b0d
 +}
 +
 +void BrowserOSServerManager::StartUpdater() {
++  if (browseros::IsBrowserOSCoreOnly()) {
++    return;  // Do not replace the locally audited server with vendor binaries.
++  }
 +  if (updater_started_ || !started_) {
 +    return;
 +  }

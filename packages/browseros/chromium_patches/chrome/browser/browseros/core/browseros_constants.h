@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000..e7b9a3a608cde
 --- /dev/null
 +++ b/chrome/browser/browseros/core/browseros_constants.h
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,245 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -79,6 +79,9 @@ index 0000000000000..e7b9a3a608cde
 +
 +inline bool IsBrowserOSExtensionProductActive(
 +    BrowserOSExtensionProduct product) {
++  if (IsBrowserOSCoreOnly()) {
++    return false;
++  }
 +  switch (product) {
 +    case BrowserOSExtensionProduct::kBrowserOS:
 +      return IsBrowserOSProduct();

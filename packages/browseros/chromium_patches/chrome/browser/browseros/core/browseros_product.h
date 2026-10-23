@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000..e35cbdaf72a25
 --- /dev/null
 +++ b/chrome/browser/browseros/core/browseros_product.h
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,93 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -21,6 +21,10 @@ index 0000000000000..e35cbdaf72a25
 +#include "chrome/browser/browseros/core/browseros_switches.h"
 +
 +namespace browseros {
++
++inline bool IsBrowserOSCoreOnly() {
++  return BUILDFLAG(BROWSEROS_CORE_ONLY);
++}
 +
 +enum class Product {
 +  kBrowserOS,

@@ -17,6 +17,25 @@ def added_source(relative: str) -> str:
 
 
 class UserControlTest(unittest.TestCase):
+    def test_core_only_disables_vendor_recovery_and_replacement(self):
+        flags = added_source("chrome/browser/browseros/buildflags.gni")
+        self.assertIn("browseros_core_only = false", flags)
+        self.assertIn("if (browseros_core_only)", flags)
+        self.assertIn("browseros_package_all_server_resources = false", flags)
+        self.assertIn("browseros_allow_runtime_product_override = false", flags)
+        for relative in (
+            "chrome/browser/extensions/external_provider_impl.cc",
+            "chrome/browser/browseros/core/browseros_constants.h",
+            "chrome/browser/browseros/onboarding/browseros_onboarding_prefs.cc",
+            "chrome/browser/browseros/server/browseros_server_manager.cc",
+            "chrome/browser/browseros/server/server_state_store_impl.cc",
+            "chrome/browser/win/winsparkle_glue.cc",
+        ):
+            self.assertIn("IsBrowserOSCoreOnly()", added_source(relative), relative)
+        bundles = added_source("chrome/browser/browseros/bundled_extensions/BUILD.gn")
+        self.assertIn('if (browseros_core_only)', bundles)
+        self.assertIn('group("bundled_extensions")', bundles)
+
     def test_bundles_are_not_components_or_policy_installs(self):
         source = added_source("chrome/browser/extensions/external_provider_impl.cc")
         self.assertIn("ManifestLocation::kExternalPref,", source)

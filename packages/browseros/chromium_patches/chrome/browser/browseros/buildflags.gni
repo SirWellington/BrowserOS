@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000..e9c2702ebc12a
 --- /dev/null
 +++ b/chrome/browser/browseros/buildflags.gni
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,44 @@
 +# Copyright 2024 The Chromium Authors
 +# Use of this source code is governed by a BSD-style license that can be
 +# found in the LICENSE file.
@@ -14,6 +14,9 @@ index 0000000000000..e9c2702ebc12a
 +  # cannot change product identity for shipped artifacts.
 +  browseros_product = "browseros"
 +
++  # Local privacy build without vendor extensions or vendor self-updates.
++  browseros_core_only = false
++
 +  # Dev/test only. Official builds should leave this false.
 +  # // TODO: nikhil - before prod claw release, set this to false
 +  browseros_allow_runtime_product_override = true
@@ -22,6 +25,12 @@ index 0000000000000..e9c2702ebc12a
 +declare_args() {
 +  # Usually follows runtime override, but can be forced on for packaging tests.
 +  browseros_package_all_server_resources = true
++}
++
++# A core-only build must never carry or select another product's vendor server.
++if (browseros_core_only) {
++  browseros_allow_runtime_product_override = false
++  browseros_package_all_server_resources = false
 +}
 +
 +assert(browseros_product == "browseros" || browseros_product == "browserclaw",

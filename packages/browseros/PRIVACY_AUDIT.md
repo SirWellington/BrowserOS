@@ -70,10 +70,10 @@ Packaging must also use freshly built agent and extension artifacts from this
 checkout. The build system supports downloading published vendor bundles; those
 do not contain local source changes. Likewise, future upstream browser, sidecar,
 or extension updates can replace a privacy-modified build. The default Windows
-wrapper intends to source-build the BrowserClaw server, but currently references
-the former `claw-server-rust` Cargo package/path instead of `claw-server`, and does
-not establish that all bundled CRXs were rebuilt. No privacy-clean distributable
-has been produced or verified by this source-only change.
+wrapper source-builds the BrowserClaw server using the `claw-server` Cargo
+package; its obsolete `claw-server-rust` package/path references have been fixed.
+This does not establish that all bundled CRXs were rebuilt. No privacy-clean
+distributable has been produced or verified by this source-only change.
 
 ## Agent/MCP analytics and error reporting
 

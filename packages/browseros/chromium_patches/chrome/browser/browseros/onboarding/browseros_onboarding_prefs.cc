@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..7cdf1c58ed69aa67d0ed7e8ce8244ba64bdc7b96
 --- /dev/null
 +++ b/chrome/browser/browseros/onboarding/browseros_onboarding_prefs.cc
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,51 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -12,6 +12,7 @@ index 0000000000000000000000000000000000000000..7cdf1c58ed69aa67d0ed7e8ce8244ba6
 +
 +#include "chrome/browser/browser_process.h"
 +#include "chrome/browser/browseros/core/browseros_prefs.h"
++#include "chrome/browser/browseros/core/browseros_product.h"
 +#include "chrome/browser/profiles/profile.h"
 +#include "chrome/common/chrome_constants.h"
 +#include "chrome/common/pref_names.h"
@@ -20,6 +21,9 @@ index 0000000000000000000000000000000000000000..7cdf1c58ed69aa67d0ed7e8ce8244ba6
 +namespace browseros::onboarding {
 +
 +bool ShouldShow(Profile* profile) {
++  if (browseros::IsBrowserOSCoreOnly()) {
++    return false;  // No bundled cockpit to hand first-run onboarding over to.
++  }
 +  if (!profile || !profile->IsRegularProfile() || profile->IsOffTheRecord()) {
 +    return false;
 +  }

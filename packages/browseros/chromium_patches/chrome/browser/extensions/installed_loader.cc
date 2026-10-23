@@ -8,8 +8,18 @@ diff --git a/chrome/browser/extensions/installed_loader.cc b/chrome/browser/exte
  #include "chrome/browser/extensions/corrupted_extension_reinstaller.h"
  #include "chrome/browser/extensions/extension_allowlist_factory.h"
  #include "chrome/browser/extensions/extension_management.h"
-@@ -364,4 +365,16 @@ void InstalledLoader::LoadAllExtensions(Profile* profile) {
+@@ -364,4 +365,26 @@ void InstalledLoader::LoadAllExtensions(Profile* profile) {
    for (auto& info : extensions_info) {
++    // An upgraded profile may still contain vendor bundles from an older
++    // build. Keep their data, but do not run those defaults in core-only mode.
++    // User-loaded unpacked extensions and actual enterprise policy stay intact.
++    if (browseros::IsBrowserOSCoreOnly() &&
++        browseros::IsKnownBrowserOSExtension(info.extension_id) &&
++        !Manifest::IsUnpackedLocation(info.extension_location) &&
++        !Manifest::IsPolicyLocation(info.extension_location)) {
++      extension_prefs_->AddDisableReason(
++          info.extension_id, disable_reason::DISABLE_USER_ACTION);
++    }
 +    // Older BrowserOS builds installed bundled extensions as components. Drop
 +    // only that product-owned privilege before creating the Extension object;
 +    // policy-installed, unpacked and unrelated extensions are left untouched.

@@ -14,7 +14,7 @@ REM       Clones depot_tools if missing, fetches the pinned tag shallowly,
 REM       and runs gclient sync. First run downloads ~100 GB and takes hours;
 REM       reruns are incremental (ninja resumes where it left off).
 REM    2. Prepares the neo agent resources: by default (AGENT_MODE=source)
-REM       builds claw-server-rust with cargo and claw-onboard with bun from
+REM       builds claw-server with cargo and claw-onboard with bun from
 REM       this checkout, staging them where the R2-based download_resources
 REM       step would put them. AGENT_MODE=published instead downloads the
 REM       released bundles from the public CDN (cdn.browseros.com). Either way
@@ -45,9 +45,14 @@ REM                   Chromium checkout you maintain yourself.
 REM    RESOURCE_MODE  published | source       default: published (downloads
 REM                   released components from the public CDN; no secrets)
 REM    AGENT_MODE     source | published   default: source (builds the neo agent
-REM                   components claw-server-rust + claw-onboard from this
+REM                   components claw-server + claw-onboard from this
 REM                   checkout with cargo/bun, auto-installing Rust and Bun if
 REM                   missing). published downloads them from cdn.browseros.com.
+REM    CORE_ONLY      yes | no             default: yes (no vendor extensions,
+REM                   onboarding handoff, or automatic vendor self-updates).
+REM    CLEAN          yes | no             default: no (preserves caches/output).
+REM    RESUME_FROM    optional step name   e.g. source_sync or compile; uses the
+REM                   build system's verified resume checkpoints.
 REM    SIGN           yes | no                 default: no (yes needs ESIGNER_*
 REM                   in packages\browseros\.env, copied from .env.example)
 REM    UPLOAD         yes | no                 default: no (yes needs R2_*)
@@ -61,6 +66,9 @@ REM ============================================================================
 REM Windows console pipes are cp1252 and the build CLI logs emoji; force UTF-8
 REM for python and its subprocesses (same as .github/workflows/build-browseros.yml).
 set "PYTHONUTF8=1"
+REM depot_tools has its own build-usage telemetry, independent of the browser.
+set "DEPOT_TOOLS_METRICS=0"
+set "DEPOT_TOOLS_COLLECT_METRICS=0"
 
 if "%PRESET%"=="" set "PRESET=release"
 if "%PRODUCT%"=="" set "PRODUCT=browserclaw"
@@ -68,6 +76,8 @@ if "%ARCH%"=="" set "ARCH=x64"
 if "%PROVISION%"=="" set "PROVISION=shallow"
 if "%RESOURCE_MODE%"=="" set "RESOURCE_MODE=published"
 if "%AGENT_MODE%"=="" set "AGENT_MODE=source"
+if "%CORE_ONLY%"=="" set "CORE_ONLY=yes"
+if "%CLEAN%"=="" set "CLEAN=no"
 if "%SIGN%"=="" set "SIGN=no"
 if "%UPLOAD%"=="" set "UPLOAD=no"
 REM Default: C:\chromium - a short root so generated build paths stay under
@@ -83,6 +93,8 @@ echo   arch          = %ARCH%
 echo   provision     = %PROVISION%
 echo   resource mode = %RESOURCE_MODE%
 echo   agent mode    = %AGENT_MODE%
+echo   core only     = %CORE_ONLY%
+echo   clean         = %CLEAN%
 echo   sign / upload = %SIGN% / %UPLOAD%
 echo   chromium root = %CHROMIUM_ROOT%
 echo.
@@ -179,7 +191,7 @@ if errorlevel 1 goto :fail
 REM --- Agent resources --------------------------------------------------------
 REM AGENT_MODE=source builds the neo agent components from this checkout and
 REM stages them where download_resources would put them:
-REM   - claw-server-rust via cargo (the same command bos_build's
+REM   - claw-server via cargo (the same command bos_build's
 REM     ServerResourceBuilder uses for windows-x64)
 REM   - claw-onboard via its bun build script (--no-upload, no R2 credentials)
 REM AGENT_MODE=published keeps the old behavior: fetch the released bundles
@@ -194,6 +206,11 @@ if /I "%PRODUCT%"=="browserclaw" goto :agent_proceed
 echo [build] NOTE: AGENT_MODE=%AGENT_MODE% is only supported for product browserclaw; staging published resources instead.
 set "AGENT_MODE=published"
 :agent_proceed
+
+if /I "%CORE_ONLY%"=="yes" if /I not "%AGENT_MODE%"=="source" (
+    echo [build] ERROR: CORE_ONLY=yes requires AGENT_MODE=source; refusing vendor server binaries.
+    goto :fail
+)
 
 if /I "%AGENT_MODE%"=="published" goto :stage_published
 
@@ -237,30 +254,25 @@ if not exist "%SHIM_DIR%\zip.bat" (
 )
 where zip >nul 2>nul || set "PATH=%SHIM_DIR%;%PATH%"
 
-if not defined CLAW_POSTHOG_KEY (
-    set "CLAW_POSTHOG_KEY=phc_browseros_ci"
-    echo [build] NOTE: CLAW_POSTHOG_KEY not set; inlining the CI placeholder. Set it before running build.bat to inline a real key.
-)
+REM Automatic analytics are disabled in this checkout; no PostHog key is needed.
 
-if not exist "%AGENT_ROOT%\node_modules" (
-    REM No literal parens in this line: inside a block an unquoted ) ends the command.
-    echo [build] Installing agent workspace dependencies via bun install ...
-    pushd "%AGENT_ROOT%"
-    bun install
-    if errorlevel 1 goto :fail
-    popd
-)
+REM Refresh workspace links after upstream changes even when node_modules exists.
+echo [build] Syncing agent workspace dependencies via bun install ...
+pushd "%AGENT_ROOT%"
+bun install --frozen-lockfile
+if errorlevel 1 goto :fail
+popd
 
-echo [build] Building claw-server-rust from source (cargo; first run ~4 min) ...
+echo [build] Building claw-server from source (cargo; first run ~4 min) ...
 pushd "%AGENT_ROOT%"
 set "CARGO_TARGET_DIR=%AGENT_ROOT%\target"
-cargo build --release --locked -p claw-server-rust --bin browseros-claw-server-rs --target x86_64-pc-windows-msvc
+cargo build --release --locked -p claw-server --bin browseros-claw-server-rs --target x86_64-pc-windows-msvc
 if errorlevel 1 goto :fail
 popd
 
 set "SERVER_VERSION="
-for /f %%v in ('powershell -NoProfile -Command "(Select-String -Path '%AGENT_ROOT%\apps\claw-server-rust\Cargo.toml' -Pattern '^version = ').Line -replace '[^0-9.]',''"') do set "SERVER_VERSION=%%v"
-if "%SERVER_VERSION%"=="" (echo [build] ERROR: could not read claw-server-rust version from Cargo.toml & goto :fail)
+for /f %%v in ('powershell -NoProfile -Command "(Select-String -Path '%AGENT_ROOT%\apps\claw-server\Cargo.toml' -Pattern '^version = ').Line -replace '[^0-9.]',''"') do set "SERVER_VERSION=%%v"
+if "%SERVER_VERSION%"=="" (echo [build] ERROR: could not read claw-server version from Cargo.toml & goto :fail)
 
 set "SOURCE_SHA="
 for /f %%s in ('"%GIT_EXE%" rev-parse HEAD') do set "SOURCE_SHA=%%s"
@@ -314,6 +326,13 @@ REM TARGET is only a local helper for the CDN URLs above; Chromium's Rust
 REM bindgen step refuses to run when TARGET is in the environment, so clear it.
 set "TARGET="
 
+set "PRIVACY_GN_FLAG=--gn-arg browseros_core_only=false"
+if /I "%CORE_ONLY%"=="yes" set "PRIVACY_GN_FLAG=--gn-arg browseros_core_only=true"
+set "CLEAN_FLAG=--no-clean"
+if /I "%CLEAN%"=="yes" set "CLEAN_FLAG=--clean"
+set "RESUME_FLAG="
+if defined RESUME_FROM set "RESUME_FLAG=--from %RESUME_FROM%"
+
 set "SIGN_FLAG=--no-sign"
 if /I "%SIGN%"=="yes" set "SIGN_FLAG=--sign"
 set "UPLOAD_FLAG=--no-upload"
@@ -321,10 +340,10 @@ if /I "%UPLOAD%"=="yes" set "UPLOAD_FLAG=--upload"
 
 echo.
 echo [build] Running: uv run browseros build --preset %PRESET% --product %PRODUCT% ^
-  --arch %ARCH% --resource-mode %RESOURCE_MODE% %SIGN_FLAG% %UPLOAD_FLAG% --provision %PROVISION% --chromium-src "%CHROMIUM_SRC%" --skip download_resources
+  --arch %ARCH% --resource-mode %RESOURCE_MODE% %SIGN_FLAG% %UPLOAD_FLAG% --provision %PROVISION% --chromium-src "%CHROMIUM_SRC%" --skip download_resources %PRIVACY_GN_FLAG% %CLEAN_FLAG% %RESUME_FLAG%
 echo.
 
-uv run browseros build --preset %PRESET% --product %PRODUCT% --arch %ARCH% --resource-mode %RESOURCE_MODE% %SIGN_FLAG% %UPLOAD_FLAG% --provision %PROVISION% --chromium-src "%CHROMIUM_SRC%" --skip download_resources
+uv run browseros build --preset %PRESET% --product %PRODUCT% --arch %ARCH% --resource-mode %RESOURCE_MODE% %SIGN_FLAG% %UPLOAD_FLAG% --provision %PROVISION% --chromium-src "%CHROMIUM_SRC%" --skip download_resources %PRIVACY_GN_FLAG% %CLEAN_FLAG% %RESUME_FLAG%
 if errorlevel 1 goto :fail
 
 REM --- Result ------------------------------------------------------------------

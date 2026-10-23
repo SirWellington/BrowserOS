@@ -44,6 +44,15 @@ class BundledExtensionsModule(Step):
 
     def execute(self, ctx: Context) -> None:
         self.validate(ctx)
+        if "browseros_core_only=true" in ctx.extra_gn_args:
+            # The explicit core-only build must not download vendor CRXs, and
+            # an incremental build must not package an earlier run's bundles.
+            output_dir = self._get_output_dir(ctx)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            self._clear_generated_outputs(ctx, output_dir)
+            self._generate_json([], output_dir)
+            log_success("Core-only build: bundled vendor extensions are disabled")
+            return
         if ctx.resource_mode == "source":
             manifest = validated_common_resources(ctx)
             staged = self._prepared_extensions(ctx, manifest)

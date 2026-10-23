@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..daec0858421976c7817879e11ad3efbce57850c5
 --- /dev/null
 +++ b/chrome/browser/browseros/server/server_state_store_impl.cc
-@@ -0,0 +1,330 @@
+@@ -0,0 +1,334 @@
 +// Copyright 2024 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -27,6 +27,7 @@ index 0000000000000000000000000000000000000000..daec0858421976c7817879e11ad3efbc
 +#include "chrome/browser/browseros/server/browseros_server_config.h"
 +#include "chrome/browser/browseros/server/browseros_server_constants.h"
 +#include "chrome/browser/browseros/server/server_version_store.h"
++#include "chrome/browser/browseros/core/browseros_product.h"
 +
 +#if BUILDFLAG(IS_WIN)
 +#include <windows.h>
@@ -207,6 +208,9 @@ index 0000000000000000000000000000000000000000..daec0858421976c7817879e11ad3efbc
 +          [](base::FilePath execution_dir, base::FilePath binary_name,
 +             ServerInstallation bundled) -> Installations {
 +            bundled.version = ProbeServerVersion(bundled.executable);
++            if (browseros::IsBrowserOSCoreOnly()) {
++              return {bundled, std::nullopt};
++            }
 +            const base::FilePath marker = execution_dir.AppendASCII(
 +                browseros_server::kCurrentVersionFileName);
 +            base::Version version = ReadReadyVersion(marker);

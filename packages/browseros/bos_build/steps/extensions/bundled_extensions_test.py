@@ -31,6 +31,27 @@ SOURCE_SHA = "2" * 40
 
 
 class BundledExtensionsTest(unittest.TestCase):
+    def test_core_only_never_fetches_and_removes_stale_generated_bundles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            chromium = root / "chromium"
+            chromium.mkdir()
+            ctx = self._ctx("browserclaw", chromium_src=chromium)
+            ctx.extra_gn_args = ("browseros_core_only=true",)
+            module = BundledExtensionsModule()
+            output = module._get_output_dir(ctx)
+            output.mkdir(parents=True)
+            (output / "old.crx").write_bytes(b"unverified vendor bundle")
+            generated = chromium / ctx.out_dir / "browseros_extensions"
+            generated.mkdir(parents=True)
+            (generated / "old.crx").write_bytes(b"unverified packaged bundle")
+            with patch.object(module, "_fetch_and_parse_manifest") as fetch:
+                module.execute(ctx)
+            fetch.assert_not_called()
+            self.assertEqual(list(output.glob("*.crx")), [])
+            self.assertEqual(json.loads((output / "bundled_extensions.json").read_text()), {})
+            self.assertFalse(generated.exists())
+
     def test_manifest_url_defaults_to_live_bundled_manifest(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(

@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..f86e22cf3df9d1aa48c25b7366c8b5d7162eef6b
 --- /dev/null
 +++ b/chrome/browser/win/winsparkle_glue.cc
-@@ -0,0 +1,377 @@
+@@ -0,0 +1,380 @@
 +// Copyright 2024 BrowserOS Authors. All rights reserved.
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -264,6 +264,9 @@ index 0000000000000000000000000000000000000000..f86e22cf3df9d1aa48c25b7366c8b5d7
 +    return enabled_;
 +  }
 +  initialized_ = true;
++  if (browseros::IsBrowserOSCoreOnly()) {
++    return false;  // Only source rebuilds may replace this privacy build.
++  }
 +
 +  // Same kill switch as the macOS Sparkle glue; keeps dev runs and tests
 +  // from hitting the production appcast.

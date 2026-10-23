@@ -41,7 +41,7 @@ def main() -> int:
     parser.add_argument("--exe", required=True, type=Path, help="cargo output browseros-claw-server-rs(.exe)")
     parser.add_argument("--skill", required=True, type=Path, help="browserclaw SKILL.md source file")
     parser.add_argument("--dest", required=True, type=Path, help="Destination directory (relative to packages/browseros)")
-    parser.add_argument("--version", required=True, help="Component version from apps/claw-server-rust/Cargo.toml")
+    parser.add_argument("--version", required=True, help="Component version from apps/claw-server/Cargo.toml")
     parser.add_argument("--target", default="windows-x64", help="Server target id (default: windows-x64)")
     parser.add_argument("--source-sha", required=True, help="Full 40-char git HEAD of the checkout being built")
     parser.add_argument("--zip-out", type=Path, default=None, help="Optional canonical bundle zip to write")

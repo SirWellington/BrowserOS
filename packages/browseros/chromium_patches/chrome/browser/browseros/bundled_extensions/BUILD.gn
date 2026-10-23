@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..dcc0720c667865f28b40801cd250c5aadcfe60d1
 --- /dev/null
 +++ b/chrome/browser/browseros/bundled_extensions/BUILD.gn
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,45 @@
 +# Copyright 2024 The Chromium Authors
 +# Use of this source code is governed by a BSD-style license that can be
 +# found in the LICENSE file.
@@ -34,7 +34,10 @@ index 0000000000000000000000000000000000000000..dcc0720c667865f28b40801cd250c5aa
 +      [ "pjimfkbpehlcllblajnpfamdfjhhlgkc.crx" ]  # BrowserClaw
 +}
 +
-+if (!is_mac) {
++if (browseros_core_only) {
++  group("bundled_extensions") {
++  }
++} else if (!is_mac) {
 +  copy("bundled_extensions") {
 +    sources = _bundled_extensions_sources
 +    outputs = [ "$root_out_dir/browseros_extensions/{{source_file_part}}" ]

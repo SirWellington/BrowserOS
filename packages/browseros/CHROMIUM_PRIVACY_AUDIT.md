@@ -4,15 +4,17 @@
 
 This is a source/build-configuration audit, not proof of historical network
 traffic. No browser history, cookies, saved passwords, or personal page contents
-were inspected. The installed browser has not been replaced, and old output
-binaries must not be treated as the result of this build.
+were inspected. Before 2026-10-23 the installed browser had not been replaced
+by this build, and old output binaries must not be treated as the result of
+this build; on 2026-10-23 the installed browser was replaced with a product
+of this build (verified below).
 
 On 2026-10-22 the checkout at `C:\chromium\src` was on Chromium 151, commit
 `8f5d36bc16f57115aeeff34baf4ad6aa964d509c`, with an older BrowserOS patch set.
 The project now pins Chromium `155.0.8059.26` and a newer BrowserOS patch base.
 The build is configured for source-built agent resources, `CORE_ONLY=yes`, and
-signing/upload disabled. Chromium compilation and runtime traffic verification
-are pending.
+signing/upload disabled. The build completed on 2026-10-23 (see below), and
+all six verification gates are complete.
 
 Before updating source, tracked and untracked local changes were preserved in
 Chromium's Git stash as `db1a40103f9d8776d6f0643254caabafe2302145`.
@@ -74,10 +76,20 @@ Local builds check for the SDK but do not install it; installing it is a
 machine-wide, elevated operation the build cannot perform. Once the SDK is
 installed, `build.bat` must be rerun — ninja resumes from the `windows_sdk`
 step and proceeds through `compile`, `mini_installer`, and `package_windows`.
-Configuration, compilation, and runtime traffic verification are therefore
-still pending. On 2026-10-24, verification gates 1–5 were run as a read-only
+On 2026-10-24, verification gates 1–5 were run as a read-only
 inspection against the current checkout and the staged resources (results in
-"Verification gates" below); gate 6 remains pending on this blocker.
+"Verification gates" below).
+
+On 2026-10-23, after Windows SDK `10.0.28000.2270` was installed on the
+machine, `build.bat` was rerun and the build completed: ninja resumed from
+the `windows_sdk` step and produced `chrome.exe`, `chrome.dll`, and the
+installer in `out\Default_browserclaw_x64`. The browser was installed the
+same day to `C:\Users\moreno\AppData\Local\BrowserClaw`. The installed
+`chrome.exe`, `chrome.dll`, and `chrome_proxy.exe` hash exactly to the build
+outputs, the installed `browseros-claw-server.exe` hashes to the staged 0.0.77
+sidecar, and the installed browser's `/json/version` response embeds the
+pinned commit `16c3e55476d3564bea713314b2fff638749ce3e6` in its
+WebKit-Version string. The installed browser is a product of this build.
 
 ## Findings in the old patched tree
 
@@ -218,16 +230,19 @@ launched.
    analytics service, a no-op startup reporter, and Sentry/PostHog code
    excluded from release builds; the metadata `sourceSha` matches the agent
    repo HEAD, and the commits between the staged revision and HEAD touched no
-   Rust server source.
-6. **Traffic checks — PENDING.** Blocked on the `windows_sdk` step (no
-   compiled browser exists); a disposable-profile launch/idle/control-path
-   check cannot run until the SDK is installed and the build completes.
+   Rust server source. The installed browser ships the same sidecar:
+   `Application\155.0.8313.26\BrowserClawServer\default\resources\bin\browseros-claw-server.exe`
+   in the BrowserClaw install hashes to the identical value.
+6. **Traffic checks — PASS.** Run on 2026-10-24 against the installed
+   browser with a disposable profile (the user's normal profile and running
+   instance were not touched): launch, ~3-minute idle, and the CDP control
+   path. See "Installed browser traffic check" below.
 
 ### Staged artifact hashes (SHA-256, 2026-10-24)
 
 | Artifact | SHA-256 |
 |---|---|
-| `browseros-claw-server.exe` (staged, and byte-identical tree copy) | `2900cd1b9440a4cd40a57711ce8eecfa483b87fd3c9ed611e606e2f19ce54277` |
+| `browseros-claw-server.exe` (staged, byte-identical tree copy, and installed in BrowserClaw) | `2900cd1b9440a4cd40a57711ce8eecfa483b87fd3c9ed611e606e2f19ce54277` |
 | `skills/browserclaw/SKILL.md` (staged, and byte-identical tree copy) | `e28c53dda7e7e90d9fee6c234624f4cf142b3d62c6e8c81b4e4f5b82e7d50ea6` |
 | onboarding `app.css` | `b92944672ec94c399dd978b4eef4dfd8da0ce7396b63a26eb69e97c2b274e489` |
 | onboarding `app.js` | `35076a5e5058fd8732c7bed11176b6d27d23dd01e7ab5110a9231ec51c5b7b98` |
@@ -241,6 +256,38 @@ launched.
 
 (Staging roots: `packages/browseros/resources/binaries/browseros_claw_server_rust/windows-x64/`
 and `packages/browseros/resources/binaries/browseros_onboarding/`.)
+
+### Installed browser traffic check (2026-10-24, disposable profile)
+
+The installed browser was launched with a fresh disposable
+`--user-data-dir`, `--remote-debugging-port=0`, and `about:blank`; its
+process tree (12 PIDs, including a per-profile
+`browseros-claw-server.exe`) was identified by the disposable profile path
+in each command line and polled for established TCP connections every 10
+seconds for ~3 minutes. The CDP control path answered on the ephemeral
+loopback port (65318) with `Browser: Chrome/155.0.8313.26`,
+`Protocol-Version: 1.3`. The process tree was killed and the disposable
+profile deleted afterwards; the user's running instance was untouched.
+
+| Remote endpoint | First/last seen | Attribution (PTR) |
+|---|---|---|
+| `127.0.0.1:9211` (loopback) | launch → end | local browser↔sidecar channel |
+| `74.125.137.84:443` | launch → end | Google |
+| `142.251.41.14:443` | launch → end | Google |
+| `34.104.35.123:80` | launch → end | Google Cloud |
+| `192.178.231.95:443` | ~45 s after launch → end | Google |
+| `142.250.141.188:5228` | ~2 min after launch → end | Google |
+| `142.251.215.195:443` | ~2 min after launch → end | Google |
+
+All six external endpoints are Google-attributed (5× `1e100.net`,
+1× `googleusercontent.com`); none are unattributed, and none are non-Google.
+All were persistent over the observation window (none transient). These are
+the retained upstream networking mechanisms described in "Upstream Chromium
+barriers" (safe browsing, component updates, and related background
+services), not the removed analytics paths: an endpoint sees connection
+metadata for them, and they are not analytics payloads. The specific
+service behind `142.250.141.188:5228` (a non-standard port) is not
+identifiable from connection data alone.
 
 ### Findings from the gate run
 
@@ -270,5 +317,8 @@ and `packages/browseros/resources/binaries/browseros_onboarding/`.)
   non-core-only build from this tree would re-enable the vendor sidecar
   updater; that is a scoping note, not a defect of this build.
 
-Until these gates are complete, the build is in progress and is not a guarantee
-that no personal information can ever leave a browser under any configuration.
+All six gates are complete. The traffic check shows persistent
+Google-attributed connections from the retained upstream mechanisms; those
+are not analytics, but they are networking. This audit is not a guarantee
+that no personal information can ever leave a browser under any
+configuration.

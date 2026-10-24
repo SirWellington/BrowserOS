@@ -75,7 +75,9 @@ machine-wide, elevated operation the build cannot perform. Once the SDK is
 installed, `build.bat` must be rerun — ninja resumes from the `windows_sdk`
 step and proceeds through `compile`, `mini_installer`, and `package_windows`.
 Configuration, compilation, and runtime traffic verification are therefore
-still pending.
+still pending. On 2026-10-24, verification gates 1–5 were run as a read-only
+inspection against the current checkout and the staged resources (results in
+"Verification gates" below); gate 6 remains pending on this blocker.
 
 ## Findings in the old patched tree
 
@@ -135,17 +137,25 @@ with a model provider or website that a user explicitly chooses to use.
 ## Evaluated alternative: ungoogled-chromium plus a built-in MCP server
 
 As a potential replacement, ungoogled-chromium was forked locally to
-`C:\Users\moreno\Documents\Code\LocalAI\ungoogled-chromium` (main repo:
-110 patches tracking Chromium `156.0.8078.47`; Windows repo: 27 additional
+`C:\Users\moreno\Documents\Code\WellingtonHQ\EDI\ungoogled-chromium` (main repo:
+110 patches tracking Chromium `156.0.8078.47`; Windows repo:
+`...\WellingtonHQ\EDI\ungoogled-chromium-windows`, 27 additional
 patches). A design for shipping a built-in MCP server comparable to BrowserOS
 neo was written to
-`C:\Users\moreno\Documents\Code\LocalAI\ungoogled-chromium\DESIGN-builtin-mcp-server.md`.
-It recommends a native Rust sidecar (`ungoogled-mcp`) launched by the browser,
+`C:\Users\moreno\Documents\Code\WellingtonHQ\EDI\DESIGN-builtin-mcp-server.md`.
+It recommends a native Rust sidecar (`EDI`) launched by the browser,
 owning a loopback CDP connection (via `--remote-debugging-port=0` and the
 `DevToolsActivePort` file) and exposing the same tool surface as neo — the same
 architecture class as neo's `claw-server` — with an estimated effort of about
 4–5 months for one engineer. This is a design proposal, not a built or tested
-replacement.
+replacement. Since that assessment, the base browser was built locally from
+the forked ungoogled-chromium (Chromium `156.0.8078.47`) and a CDP attach
+probe passed: the browser launches with `--remote-debugging-port=0` on a
+disposable profile, the ephemeral port is discovered via the
+`DevToolsActivePort` file, and `http://127.0.0.1:<port>/json/version`
+answers over loopback with the expected browser identity — the exact
+mechanism EDI's `runtime.json` will use. The EDI sidecar itself is not yet
+implemented.
 
 ## Verification gates
 
@@ -162,6 +172,103 @@ Before calling the build privacy-verified, check all of the following.
 4. Browser output and installer contain no vendor extension CRXs or alternate vendor server bundles.
 5. The packaged native sidecar is attributable to this source build and cannot activate analytics or automatic error reporting.
 6. A disposable profile is used for launch/idle/control-path traffic checks; no normal user profile is opened for testing.
+
+### Gate results (2026-10-24, read-only inspection)
+
+Gates 1–5 were evaluated against the current checkout
+(`C:\chromium\src` at `16c3e55476d3564bea713314b2fff638749ce3e6`) and the
+staged resources. No build was run, no file was modified, and no browser was
+launched.
+
+1. **Checkout/dependencies/patches — PASS.** The checkout is at the pinned
+   commit. All 407 patches (402 from `packages/browseros/chromium_patches`
+   plus the 5 in `series_patches/series.windows`) reverse-apply cleanly
+   (`git apply --check -R`), i.e. every required patch is applied. The
+   working-tree state is fully accounted for: patch-derived changes, the DEPS
+   edit that drops the eight unused 32-bit/arm64 updater CIPD blocks (the
+   `63a0b395e` wrapper change), the branding step, and staged resources.
+2. **Generated GN args — PASS.** `out\Default_browserclaw_x64\args.gn` sets
+   `browseros_core_only=true`, `browseros_product = "browserclaw"`,
+   `browseros_allow_runtime_product_override = false`,
+   `browseros_package_all_server_resources = false`, and empty Google API
+   credentials (`google_api_key=""`, `use_official_google_api_keys=false`).
+   Generated flags confirm Chromium branding
+   (`BUILDFLAG_INTERNAL_CHROMIUM_BRANDING() == 1`) and core-only
+   (`BUILDFLAG_INTERNAL_BROWSEROS_CORE_ONLY() == 1`); the server-resources
+   target copies only the source-built `claw_server/resources`.
+3. **Applied source — PASS.** `BrowserOSMetrics::Log` is an empty
+   compatibility entry point whose GN target carries no network deps; both
+   crash-reporter clients return consent `false` and an empty upload URL. A
+   source-wide search of `chrome/` found no sender code: one comment-only
+   PostHog hit, and one dead `kSentryMinidumpUrl` constant (see findings).
+   Core-only gates confirmed in source: empty bundled-extension group,
+   WinSparkle `Initialize()` refused, sidecar `StartUpdater()` refused,
+   runtime product override compiled out.
+4. **Vendor extensions — PASS.** Core-only staging performed no manifest
+   fetch and no CRX download;
+   `chrome/browser/browseros/bundled_extensions/` contains only `BUILD.gn`
+   and an empty `bundled_extensions.json`; no
+   `out\Default_browserclaw_x64\browseros_extensions` directory exists; no
+   vendor CRXs anywhere under `chrome/` or `out/`.
+5. **Staged native sidecar — PASS.** The staged 0.0.77 `windows-x64` server
+   exe hashes to the recorded value, is byte-identical to the copy staged
+   into the Chromium tree, and every staged artifact matches its
+   `artifact-metadata.json`. The binary carries the 0.0.77 version marker and
+   no PostHog/Sentry strings. The source (`claw-server`) has an inert
+   analytics service, a no-op startup reporter, and Sentry/PostHog code
+   excluded from release builds; the metadata `sourceSha` matches the agent
+   repo HEAD, and the commits between the staged revision and HEAD touched no
+   Rust server source.
+6. **Traffic checks — PENDING.** Blocked on the `windows_sdk` step (no
+   compiled browser exists); a disposable-profile launch/idle/control-path
+   check cannot run until the SDK is installed and the build completes.
+
+### Staged artifact hashes (SHA-256, 2026-10-24)
+
+| Artifact | SHA-256 |
+|---|---|
+| `browseros-claw-server.exe` (staged, and byte-identical tree copy) | `2900cd1b9440a4cd40a57711ce8eecfa483b87fd3c9ed611e606e2f19ce54277` |
+| `skills/browserclaw/SKILL.md` (staged, and byte-identical tree copy) | `e28c53dda7e7e90d9fee6c234624f4cf142b3d62c6e8c81b4e4f5b82e7d50ea6` |
+| onboarding `app.css` | `b92944672ec94c399dd978b4eef4dfd8da0ce7396b63a26eb69e97c2b274e489` |
+| onboarding `app.js` | `35076a5e5058fd8732c7bed11176b6d27d23dd01e7ab5110a9231ec51c5b7b98` |
+| onboarding `index.html` | `875a4b281f35efce067f4454722c7f854fdbb04e513b85e3d1cdab96e5202c19` |
+| onboarding `icon/16.png` | `256d00e322b934b8f831712ae5b1e977c30351a9a37fcad26f2c95d3fbadb210` |
+| onboarding `icon/32.png` | `09c4814ebb8811ec07f9fc6b80b6a4d6e8c4cc4ff991ffe6f1f2410ac7219e5a` |
+| onboarding `icon/48.png` | `e155421f1b65b2924795d512351f1c6288cf8b3d399cec6245ce0540e18b9862` |
+| onboarding `icon/96.png` | `2ee57fe408cb807aeaa073ce76a98b27b3d4aba9737a8951f1affd53b4497b30` |
+| onboarding `icon/128.png` | `bb49ab0d9cb87ff1ef3a1d9cc308bee4aac069230b462f8b7de11bcdd4a42a51` |
+| onboarding `icon/keychain-prompt.png` | `6fd993093d750a2eb17172b0c26df72681d47827c3bc22ce06cc16570a8d26c3` |
+
+(Staging roots: `packages/browseros/resources/binaries/browseros_claw_server_rust/windows-x64/`
+and `packages/browseros/resources/binaries/browseros_onboarding/`.)
+
+### Findings from the gate run
+
+- **Dead Sentry DSN in applied source.**
+  `chrome/browser/browseros/core/browseros_constants.h:237-241` defines
+  `kSentryMinidumpUrl` with a live-looking Sentry ingest DSN and key. It is
+  referenced nowhere (the real upload URL is empty in both crash clients), so
+  it is not a transmission path — but it is a credential sitting in source.
+  Recommended: remove it from the patch that introduces the constants
+  header.
+- **Stale source-revision record.** This document previously recorded the
+  staged server's source revision as `2ea06075962849bd2e181c13fbcc7dfade8e68b3`;
+  the artifact metadata records `sourceSha: 6947ecb66291b62c0556494a12852be7e1e2af1e`
+  (the agent repo HEAD). The two differ by four commits, none of which
+  touched Rust server source, so the exe is attributable to the current tree;
+  the metadata value is the accurate record.
+- **Vendored WinSparkle binaries.** `third_party/sparkle/` and
+  `third_party/winsparkle/` (including prebuilt `WinSparkle.dll`/`.lib`) are
+  untracked, wrapper-vendored, and referenced by patched BUILD files. They
+  are inert in this build: core-only refuses WinSparkle initialization before
+  the DLL loads.
+- **`enable_winsparkle=true` in args.gn** only decides whether the glue code
+  is compiled; the core-only runtime check is what disables it.
+- **Browser-side OTA design remains in source.**
+  `browseros_server_config.cc` still contains vendor appcast URLs and an
+  updater descriptor, gated off by core-only in this build. A future
+  non-core-only build from this tree would re-enable the vendor sidecar
+  updater; that is a scoping note, not a defect of this build.
 
 Until these gates are complete, the build is in progress and is not a guarantee
 that no personal information can ever leave a browser under any configuration.
